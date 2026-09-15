@@ -169,18 +169,18 @@ theorem size_le_of_below {C W : Nat} {t : Tree} (hwf : Wf C W t) :
       have h2 := size_le_of_below hwf r (p ++ [k]) hc hb
       omega
 
-/-- Every live node below a live node at `V + 1` is at `V + 1`. -/
-theorem below_advanced {cfg : Config} {V : Nat} {phase : Nat → ConsumerPhase} {t : Tree}
+/-- Versions never decrease going down through live nodes. -/
+theorem version_le_below {cfg : Config} {V : Nat} {phase : Nat → ConsumerPhase} {t : Tree}
     (hwf : Wf cfg.cluster cfg.workers t) (hinv : TreeInv cfg V phase t) :
-    ∀ (r q : List Nat) (n : Tree), t.get q = some n → n.version = V + 1 → ¬ deadAt cfg.workers t q n →
-      ∀ m, t.get (q ++ r) = some m → ¬ deadAt cfg.workers t (q ++ r) m → m.version = V + 1
-  | [], q, n, hq, hver, _, m, hm, _ => by
+    ∀ (r q : List Nat) (n : Tree), t.get q = some n → ¬ deadAt cfg.workers t q n →
+      ∀ m, t.get (q ++ r) = some m → ¬ deadAt cfg.workers t (q ++ r) m → n.version ≤ m.version
+  | [], q, n, hq, _, m, hm, _ => by
     simp only [List.append_nil] at hm
     rw [hq] at hm
     have := Option.some.inj hm
     subst this
-    exact hver
-  | k :: r, q, n, hq, hver, hnd, m, hm, hdm => by
+    exact Nat.le_refl _
+  | k :: r, q, n, hq, hnd, m, hm, hdm => by
     rw [List.append_cons] at hm hdm
     cases hc : t.get (q ++ [k]) with
     | none => rw [Tree.get_append, hc] at hm; simp at hm
@@ -192,10 +192,18 @@ theorem below_advanced {cfg : Config} {V : Nat} {phase : Nat → ConsumerPhase} 
       rw [hc] at hc'
       have := Option.some.inj hc'
       subst this
-      have hcv : c.version = V + 1 := by
-        have := (hinv.nodes _ c hc).version_le
-        omega
-      exact below_advanced hwf hinv r (q ++ [k]) c hc hcv (live_child hwf hq hk hc hnd) m hm hdm
+      have := version_le_below hwf hinv r (q ++ [k]) c hc (live_child hwf hq hk hc hnd) m hm hdm
+      omega
+
+/-- Every live node below a live node at `V + 1` is at `V + 1`. -/
+theorem below_advanced {cfg : Config} {V : Nat} {phase : Nat → ConsumerPhase} {t : Tree}
+    (hwf : Wf cfg.cluster cfg.workers t) (hinv : TreeInv cfg V phase t) :
+    ∀ (r q : List Nat) (n : Tree), t.get q = some n → n.version = V + 1 → ¬ deadAt cfg.workers t q n →
+      ∀ m, t.get (q ++ r) = some m → ¬ deadAt cfg.workers t (q ++ r) m → m.version = V + 1 := by
+  intro r q n hq hver hnd m hm hdm
+  have h1 := version_le_below hwf hinv r q n hq hnd m hm hdm
+  have h2 := (hinv.nodes _ m hm).version_le
+  omega
 
 set_option linter.deprecated false in
 /-- When a node covering every worker reaches `V + 1`, every consumer is
@@ -325,7 +333,7 @@ theorem nextConsumer_finished {cfg : Config} {V : Nat} (hV : V < cfg.count) :
 /-- The producer's steps. -/
 theorem step_producer_inv {cfg : Config} {s s' : State} {ev : Option Event}
     (hinv : Inv cfg s) (h : step cfg s .producer = .step s' ev) : Inv cfg s' := by
-  obtain ⟨p, p', pr, hp, hmove, hp', hpr, hcs, ht⟩ := step_producer_move h
+  obtain ⟨p, p', pr, hp, hmove, hp', hpr, hcs, ht, -, -⟩ := step_producer_move h
   show InvAt cfg s'.probe s'.tree s'.producer (s'.producer.version cfg) s'.consumers
   rw [hp', hpr, hcs, ht]
   have hinv : InvAt cfg s.probe s.tree p (p.version cfg) s.consumers := by rw [← hp]; exact hinv
@@ -406,7 +414,7 @@ theorem step_producer_inv {cfg : Config} {s s' : State} {ev : Option Event}
 /-- The consumers' steps. -/
 theorem step_consumer_inv {cfg : Config} {s s' : State} {id : Nat} {ev : Option Event}
     (hinv : Inv cfg s) (h : step cfg s (.consumer id) = .step s' ev) : Inv cfg s' := by
-  obtain ⟨ph, ph', t', hph, hmove, hcs, ht, hprod, hprobe⟩ := step_consumer_move h
+  obtain ⟨ph, ph', t', hph, hmove, hcs, ht, hprod, hprobe, -, -⟩ := step_consumer_move h
   have hid : id < cfg.workers := by
     obtain ⟨hlt, -⟩ := Array.getElem?_eq_some_iff.mp hph
     rw [hinv.size] at hlt

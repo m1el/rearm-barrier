@@ -31,34 +31,41 @@ def ConsumerPhase.writesResult : ConsumerPhase → Bool
   | .inFunc _ | .initializing => true
   | _ => false
 
-/-- All violated invariants of `s`, as human-readable messages. -/
-def violations (cfg : Config) (s : State) : List String := Id.run do
-  let mut out : List String := []
+/-- All violated invariants of `s`, as human-readable messages. Written
+without loops so that `RearmBarrier.SpecProofs` can prove it empty in every
+reachable state. -/
+def violations (cfg : Config) (s : State) : List String :=
   let cs := s.consumers.toList.zipIdx
   -- non-atomic accesses to the job slot
-  if let .writing v := s.producer then
-    for (ph, i) in cs do
+  (match s.producer with
+   | .writing v => cs.filterMap fun (ph, i) =>
       if ph.insideFunc then
-        out := out ++ [s!"race on the job slot: producer writes job {v} while consumer {i} is inside func"]
+        some s!"race on the job slot: producer writes job {v} while consumer {i} is inside func"
+      else none
+   | _ => []) ++
   -- non-atomic accesses to the result slots
-  if let .completing v := s.producer then
-    for (ph, i) in cs do
+  (match s.producer with
+   | .completing v => cs.filterMap fun (ph, i) =>
       if ph.writesResult then
-        out := out ++ [s!"race on result slot {i}: producer is inside complete for version {v} while consumer {i} writes its result"]
+        some s!"race on result slot {i}: producer is inside complete for version {v} while consumer {i} writes its result"
+      else none
+   | _ => []) ++
   -- the job seen by func
-  for (ph, i) in cs do
-    if let .inFunc v := ph then
+  (cs.filterMap fun (ph, i) =>
+    match ph with
+    | .inFunc v =>
       if s.job != some v then
-        out := out ++ [s!"consumer {i} runs func for version {v} but the job slot holds {optNat s.job}"]
+        some s!"consumer {i} runs func for version {v} but the job slot holds {optNat s.job}"
+      else none
+    | _ => none) ++
   -- the results seen by complete
-  if let .completing v := s.producer then
-    for (r, i) in s.results.toList.zipIdx do
-      if r != some v then
-        out := out ++ [s!"complete for version {v} sees result {optNat r} in slot {i}"]
+  (match s.producer with
+   | .completing v => s.results.toList.zipIdx.filterMap fun (r, i) =>
+      if r != some v then some s!"complete for version {v} sees result {optNat r} in slot {i}" else none
+   | _ => []) ++
   -- counters never run ahead of the protocol
-  if s.probe > 2 * cfg.count then
-    out := out ++ [s!"probe = {s.probe} exceeds 2 * count = {2 * cfg.count}"]
-  return out ++ s.tree.invariant cfg s.consumers []
+  (if s.probe > 2 * cfg.count then [s!"probe = {s.probe} exceeds 2 * count = {2 * cfg.count}"] else []) ++
+  s.tree.invariant cfg s.consumers []
 
 /-- What must hold once every thread has returned. -/
 def finalViolations (cfg : Config) (s : State) : List String :=

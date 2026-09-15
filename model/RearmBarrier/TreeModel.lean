@@ -366,54 +366,69 @@ def leafDone (leafPath : List Nat) (count : Nat) : ConsumerPhase → Nat
   | .finish v => v + 1
   | .done => count
 
-/-- The contributions currently carried towards the node at `path`. -/
+/-- The contributions currently carried towards the node at `path`:
+`(consumer, version, amount)`. -/
 def inFlightTo (path : List Nat) (cs : Array ConsumerPhase) : List (Nat × Nat × Nat) :=
-  cs.toList.zipIdx.filterMap fun (ph, id) =>
-    match ph with
+  (List.range cs.size).filterMap fun id =>
+    match cs[id]! with
     | .walk v c => if c.path == path then some (id, v, c.mergeAmount) else none
     | _ => none
 
-partial def Tree.invariant (cfg : Config) (cs : Array ConsumerPhase) (path : List Nat) (t : Tree) :
-    List String := Id.run do
-  let mut out : List String := []
+/-- The violations of the counting invariant at one node (see the module
+header). Written without loops so that `RearmBarrier.TreeCheck` can prove it
+empty under `TreeInv`. -/
+def Tree.nodeViolations (cfg : Config) (cs : Array ConsumerPhase) (path : List Nat) (t : Tree) :
+    List String :=
   let here := s!"node {path} (window [{t.lo}, {t.hi}), version {t.version}, finished {t.finished})"
   let carried := inFlightTo path cs
-  for (id, v, _) in carried do
-    if v != t.version then
-      out := out ++ [s!"consumer {id} at version {v} carries a contribution to {here}"]
   let inFlight := (carried.map (·.2.2)).sum
-  if t.version > cfg.count then
-    out := out ++ [s!"{here} is beyond the last version"]
-  if t.finished ≥ t.size && t.size > 0 then
-    out := out ++ [s!"{here} is full but was not advanced"]
-  if t.isLeaf then
+  (carried.filterMap fun (id, v, _) =>
+    if v != t.version then some s!"consumer {id} at version {v} carries a contribution to {here}"
+    else none) ++
+  (if t.version > cfg.count then [s!"{here} is beyond the last version"] else []) ++
+  (if t.finished ≥ t.size && t.size > 0 then [s!"{here} is full but was not advanced"] else []) ++
+  (if t.isLeaf then
     -- a leaf counts the consumers of its window that did their fetch_add
-    let mut contributed := 0
-    for id in [t.lo:t.hi] do
-      let d := leafDone path cfg.count cs[id]!
-      if d < t.version || d > t.version + 1 then
-        out := out ++ [s!"consumer {id} has done {d} leaf contributions but its leaf is {here}"]
-      if d == t.version + 1 then contributed := contributed + 1
-    if t.finished != contributed then
-      out := out ++ [s!"{here} has {contributed} consumers past their fetch_add"]
-    for (id, _, amount) in carried do
-      if amount != 1 then
-        out := out ++ [s!"consumer {id} carries {amount} to leaf {here}"]
+    let ids := List.range' t.lo (t.hi - t.lo)
+    let done := fun id => leafDone path cfg.count cs[id]!
+    (ids.filterMap fun id =>
+      if done id < t.version || done id > t.version + 1 then
+        some s!"consumer {id} has done {done id} leaf contributions but its leaf is {here}"
+      else none) ++
+    (let contributed := (ids.map fun id => if done id == t.version + 1 then 1 else 0).sum
+     if t.finished != contributed then [s!"{here} has {contributed} consumers past their fetch_add"]
+     else []) ++
+    (carried.filterMap fun (id, _, amount) =>
+      if amount != 1 then some s!"consumer {id} carries {amount} to leaf {here}" else none)
   else if t.children.any (·.size == cfg.workers) then
     -- dead: the crate stops at the child that covers every worker
     if t.version != 0 || t.finished != 0 || !carried.isEmpty then
-      out := out ++ [s!"{here} is above the node covering every worker but was touched"]
+      [s!"{here} is above the node covering every worker but was touched"]
+    else []
   else
     -- live: children one version ahead have filled and been (or are being) propagated
-    let mut filled := 0
-    for (child, k) in t.children.zipIdx do
+    (t.children.zipIdx.filterMap fun (child, k) =>
       if child.version < t.version || child.version > t.version + 1 then
-        out := out ++ [s!"child {k} of {here} counts version {child.version}"]
-      if child.version == t.version + 1 then filled := filled + child.size
-    if t.finished + inFlight != filled then
-      out := out ++ [s!"{here} plus {inFlight} in flight does not match {filled} finished below it"]
-  for (child, k) in t.children.zipIdx do
-    out := out ++ child.invariant cfg cs (path ++ [k])
-  return out
+        some s!"child {k} of {here} counts version {child.version}"
+      else none) ++
+    (let filled := (t.children.map fun child => if child.version == t.version + 1 then child.size else 0).sum
+     if t.finished + inFlight != filled then
+       [s!"{here} plus {inFlight} in flight does not match {filled} finished below it"]
+     else []))
+
+mutual
+/-- The violations of the counting invariant at the node at `path` and
+everything below it, in pre-order. -/
+def Tree.invariant (cfg : Config) (cs : Array ConsumerPhase) (path : List Nat) : Tree → List String
+  | .mk v f r lo hi children =>
+    Tree.nodeViolations cfg cs path (.mk v f r lo hi children) ++
+      Tree.invariantChildren cfg cs path 0 children
+
+/-- The violations below the children from slot `k` on. -/
+def Tree.invariantChildren (cfg : Config) (cs : Array ConsumerPhase) (path : List Nat) (k : Nat) :
+    List Tree → List String
+  | [] => []
+  | c :: rest => c.invariant cfg cs (path ++ [k]) ++ Tree.invariantChildren cfg cs path (k + 1) rest
+end
 
 end RearmBarrier

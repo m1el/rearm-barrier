@@ -47,61 +47,67 @@ theorem phaseOf_replicate (n : Nat) : phaseOf (Array.replicate n .start) = fun _
 /-! ## What the model's steps do to the state -/
 
 theorem access_unchanged {s s' : State} {t : Nat} {a : Access} (h : s.access t a = .ok s') :
-    s'.consumers = s.consumers ∧ s'.tree = s.tree ∧ s'.producer = s.producer ∧ s'.probe = s.probe := by
+    s'.consumers = s.consumers ∧ s'.tree = s.tree ∧ s'.producer = s.producer ∧ s'.probe = s.probe ∧
+      s'.job = s.job ∧ s'.results = s.results := by
   cases a with
   | readJob =>
     unfold State.access at h
     simp only at h
     split at h
     · cases h
-    · cases h; exact ⟨rfl, rfl, rfl, rfl⟩
+    · cases h; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   | writeJob =>
     unfold State.access at h
     simp only at h
     split at h
     · cases h
-    · cases h; exact ⟨rfl, rfl, rfl, rfl⟩
+    · cases h; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   | writeResult i =>
     unfold State.access at h
     simp only at h
     split at h
     · cases h
-    · cases h; exact ⟨rfl, rfl, rfl, rfl⟩
+    · cases h; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   | writeAllResults =>
     unfold State.access at h
     simp only at h
     split at h
-    · cases h; exact ⟨rfl, rfl, rfl, rfl⟩
+    · cases h; exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
     · cases h
 
 theorem accessing_unchanged {s s' : State} {t : Nat} {a : Access} {k : State → Outcome} {ev : Option Event}
     (h : Outcome.accessing s t a k = .step s' ev) :
     ∃ s₁, s.access t a = .ok s₁ ∧ s₁.consumers = s.consumers ∧ s₁.tree = s.tree ∧
-      s₁.producer = s.producer ∧ s₁.probe = s.probe ∧ k s₁ = .step s' ev := by
+      s₁.producer = s.producer ∧ s₁.probe = s.probe ∧ s₁.job = s.job ∧ s₁.results = s.results ∧
+      k s₁ = .step s' ev := by
   unfold Outcome.accessing at h
   split at h
   · rename_i s₁ h₁
-    obtain ⟨h2, h3, h4, h5⟩ := access_unchanged h₁
-    exact ⟨s₁, h₁, h2, h3, h4, h5, h⟩
+    obtain ⟨h2, h3, h4, h5, h6, h7⟩ := access_unchanged h₁
+    exact ⟨s₁, h₁, h2, h3, h4, h5, h6, h7, h⟩
   · simp at h
 
 theorem tick_unchanged (s : State) (t : Nat) :
     (s.tick t).consumers = s.consumers ∧ (s.tick t).tree = s.tree ∧
-      (s.tick t).producer = s.producer ∧ (s.tick t).probe = s.probe :=
-  ⟨rfl, rfl, rfl, rfl⟩
+      (s.tick t).producer = s.producer ∧ (s.tick t).probe = s.probe ∧
+      (s.tick t).job = s.job ∧ (s.tick t).results = s.results :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem rmwProbe_unchanged (s : State) (t : Nat) (o : MemOrd) :
     (s.rmwProbe t o).consumers = s.consumers ∧ (s.rmwProbe t o).tree = s.tree ∧
-      (s.rmwProbe t o).producer = s.producer ∧ (s.rmwProbe t o).probe = s.probe := by
+      (s.rmwProbe t o).producer = s.producer ∧ (s.rmwProbe t o).probe = s.probe ∧
+      (s.rmwProbe t o).job = s.job ∧ (s.rmwProbe t o).results = s.results := by
   unfold State.rmwProbe
-  split <;> split <;> exact ⟨rfl, rfl, rfl, rfl⟩
+  split <;> split <;> exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem fence_unchanged (s : State) (t : Nat) (b : Bool) :
     (if b then s.acquireProbe t else s).consumers = s.consumers ∧
       (if b then s.acquireProbe t else s).tree = s.tree ∧
       (if b then s.acquireProbe t else s).producer = s.producer ∧
-      (if b then s.acquireProbe t else s).probe = s.probe := by
-  split <;> exact ⟨rfl, rfl, rfl, rfl⟩
+      (if b then s.acquireProbe t else s).probe = s.probe ∧
+      (if b then s.acquireProbe t else s).job = s.job ∧
+      (if b then s.acquireProbe t else s).results = s.results := by
+  split <;> exact ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem setConsumer_tree (s : State) (id : Nat) (ph : ConsumerPhase) : (s.setConsumer id ph).tree = s.tree := rfl
 
@@ -113,6 +119,12 @@ theorem setConsumer_producer (s : State) (id : Nat) (ph : ConsumerPhase) :
 
 theorem setConsumer_probe (s : State) (id : Nat) (ph : ConsumerPhase) :
     (s.setConsumer id ph).probe = s.probe := rfl
+
+theorem setConsumer_job (s : State) (id : Nat) (ph : ConsumerPhase) :
+    (s.setConsumer id ph).job = s.job := rfl
+
+theorem setConsumer_results (s : State) (id : Nat) (ph : ConsumerPhase) :
+    (s.setConsumer id ph).results = s.results := rfl
 
 /-- A producer step never touches the consumers or the tree. -/
 theorem step_producer_unchanged {cfg : Config} {s s' : State} {ev : Option Event}
@@ -126,7 +138,7 @@ theorem step_producer_unchanged {cfg : Config} {s s' : State} {ev : Option Event
     rw [tick_unchanged s'' _ |>.1, tick_unchanged s'' _ |>.2.1]
     unfold producerStep at hp
     split at hp
-    · obtain ⟨s₁, -, h2, h3, -, -, hk⟩ := accessing_unchanged hp
+    · obtain ⟨s₁, -, h2, h3, -, -, -, -, hk⟩ := accessing_unchanged hp
       simp only [Outcome.step.injEq] at hk
       obtain ⟨rfl, -⟩ := hk
       exact ⟨h2, h3⟩
@@ -139,7 +151,7 @@ theorem step_producer_unchanged {cfg : Config} {s s' : State} {ev : Option Event
         obtain ⟨rfl, -⟩ := hp
         exact ⟨(fence_unchanged _ _ _).1, (fence_unchanged _ _ _).2.1⟩
       · cases hp
-    · obtain ⟨s₁, -, h2, h3, -, -, hk⟩ := accessing_unchanged hp
+    · obtain ⟨s₁, -, h2, h3, -, -, -, -, hk⟩ := accessing_unchanged hp
       simp only [Outcome.step.injEq] at hk
       obtain ⟨rfl, -⟩ := hk
       exact ⟨h2, h3⟩
@@ -160,11 +172,20 @@ inductive ProducerMove (cfg : Config) (s : State) : ProducerPhase → ProducerPh
   | beforeComplete (v : Nat) : ProducerMove cfg s (.beforeComplete v) (.completing v) s.probe
   | completing (v : Nat) : ProducerMove cfg s (.completing v) (nextProducer cfg v) s.probe
 
-/-- Every producer step is one of the moves. -/
+/-- The job slot after a producer step from phase `p`: only the two halves
+of the write change it. -/
+def jobAfter (job : Option Nat) : ProducerPhase → Option Nat
+  | .beforeWrite _ => none
+  | .writing v => some v
+  | _ => job
+
+/-- Every producer step is one of the moves; it never touches the consumers,
+the tree or the result slots. -/
 theorem step_producer_move {cfg : Config} {s s' : State} {ev : Option Event}
     (h : step cfg s .producer = .step s' ev) :
     ∃ p p' pr, s.producer = p ∧ ProducerMove cfg s p p' pr ∧ s'.producer = p' ∧ s'.probe = pr ∧
-      s'.consumers = s.consumers ∧ s'.tree = s.tree := by
+      s'.consumers = s.consumers ∧ s'.tree = s.tree ∧ s'.job = jobAfter s.job p ∧
+      s'.results = s.results := by
   obtain ⟨hc, ht⟩ := step_producer_unchanged h
   unfold step at h
   simp only at h
@@ -172,15 +193,18 @@ theorem step_producer_move {cfg : Config} {s s' : State} {ev : Option Event}
   · rename_i s'' ev' hp
     simp only [Outcome.step.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
-    refine ⟨s.producer, s''.producer, s''.probe, rfl, ?_, rfl, rfl, hc, ht⟩
+    suffices hsuff : ProducerMove cfg s s.producer s''.producer s''.probe ∧
+        s''.job = jobAfter s.job s.producer ∧ s''.results = s.results from
+      ⟨s.producer, s''.producer, s''.probe, rfl, hsuff.1, rfl, rfl, hc, ht, hsuff.2.1, hsuff.2.2⟩
     unfold producerStep at hp
     cases hpp : s.producer with
     | beforeWrite v =>
       rw [hpp] at hp
       dsimp only at hp
-      obtain ⟨s₁, -, -, -, -, h5, hk⟩ := accessing_unchanged hp
+      obtain ⟨s₁, -, -, -, -, h5, -, h7, hk⟩ := accessing_unchanged hp
       simp only [Outcome.step.injEq] at hk
       obtain ⟨rfl, -⟩ := hk
+      refine ⟨?_, rfl, h7⟩
       show ProducerMove cfg s (.beforeWrite v) (.writing v) s₁.probe
       rw [h5]
       exact .beforeWrite v
@@ -189,13 +213,13 @@ theorem step_producer_move {cfg : Config} {s s' : State} {ev : Option Event}
       dsimp only at hp
       simp only [Outcome.step.injEq] at hp
       obtain ⟨rfl, -⟩ := hp
-      exact .writing v
+      exact ⟨.writing v, rfl, rfl⟩
     | publish v =>
       rw [hpp] at hp
       dsimp only at hp
       simp only [Outcome.step.injEq] at hp
       obtain ⟨rfl, -⟩ := hp
-      exact .publish v
+      exact ⟨.publish v, (rmwProbe_unchanged _ _ _).2.2.2.2.1, (rmwProbe_unchanged _ _ _).2.2.2.2.2⟩
     | waiting v =>
       rw [hpp] at hp
       dsimp only at hp
@@ -203,17 +227,19 @@ theorem step_producer_move {cfg : Config} {s s' : State} {ev : Option Event}
       · rename_i heq
         simp only [Outcome.step.injEq] at hp
         obtain ⟨rfl, -⟩ := hp
+        refine ⟨?_, (fence_unchanged _ _ _).2.2.2.2.1, (fence_unchanged _ _ _).2.2.2.2.2⟩
         show ProducerMove cfg s (.waiting v) (.beforeComplete v)
           (if cfg.orderings.producerFence then s.acquireProbe (threadIndex .producer) else s).probe
-        rw [(fence_unchanged _ _ _).2.2.2]
+        rw [(fence_unchanged _ _ _).2.2.2.1]
         exact .waiting v heq
       · cases hp
     | beforeComplete v =>
       rw [hpp] at hp
       dsimp only at hp
-      obtain ⟨s₁, -, -, -, -, h5, hk⟩ := accessing_unchanged hp
+      obtain ⟨s₁, -, -, -, -, h5, h6, h7, hk⟩ := accessing_unchanged hp
       simp only [Outcome.step.injEq] at hk
       obtain ⟨rfl, -⟩ := hk
+      refine ⟨?_, h6, h7⟩
       show ProducerMove cfg s (.beforeComplete v) (.completing v) s₁.probe
       rw [h5]
       exact .beforeComplete v
@@ -222,7 +248,7 @@ theorem step_producer_move {cfg : Config} {s s' : State} {ev : Option Event}
       dsimp only at hp
       simp only [Outcome.step.injEq] at hp
       obtain ⟨rfl, -⟩ := hp
-      exact .completing v
+      exact ⟨.completing v, rfl, rfl⟩
     | done =>
       rw [hpp] at hp
       cases hp
@@ -248,12 +274,20 @@ def probeAfter (probe : Nat) : ConsumerPhase → Nat
   | .finish _ => probe + 1
   | _ => probe
 
+/-- The result slots after consumer `id`'s step from phase `ph`: cleared
+when it initialises, written when it leaves `func`. -/
+def resultsAfter (results : Array (Option Nat)) (id : Nat) : ConsumerPhase → Array (Option Nat)
+  | .initializing => results.setIfInBounds id none
+  | .inFunc v => results.setIfInBounds id (some v)
+  | _ => results
+
 /-- Every consumer step is one of the moves, applied with `setConsumer`. -/
 theorem step_consumer_move {cfg : Config} {s s' : State} {id : Nat} {ev : Option Event}
     (h : step cfg s (.consumer id) = .step s' ev) :
     ∃ ph ph' t', s.consumers[id]? = some ph ∧ ConsumerMove cfg s id ph ph' t' ∧
       s'.consumers = s.consumers.setIfInBounds id ph' ∧ s'.tree = t' ∧
-      s'.producer = s.producer ∧ s'.probe = probeAfter s.probe ph := by
+      s'.producer = s.producer ∧ s'.probe = probeAfter s.probe ph ∧
+      s'.job = s.job ∧ s'.results = resultsAfter s.results id ph := by
   unfold step at h
   simp only at h
   split at h
@@ -261,7 +295,8 @@ theorem step_consumer_move {cfg : Config} {s s' : State} {id : Nat} {ev : Option
     simp only [Outcome.step.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
     rw [tick_unchanged s'' _ |>.1, tick_unchanged s'' _ |>.2.1, tick_unchanged s'' _ |>.2.2.1,
-      tick_unchanged s'' _ |>.2.2.2]
+      tick_unchanged s'' _ |>.2.2.2.1, tick_unchanged s'' _ |>.2.2.2.2.1,
+      tick_unchanged s'' _ |>.2.2.2.2.2]
     unfold consumerStep at hc
     simp only [threadIndex] at hc
     cases hph : s.consumers[id]? with
@@ -271,16 +306,17 @@ theorem step_consumer_move {cfg : Config} {s s' : State} {id : Nat} {ev : Option
       cases ph with
       | start =>
         dsimp only at hc
-        obtain ⟨s₁, -, h2, h3, h4, h5, hk⟩ := accessing_unchanged hc
+        obtain ⟨s₁, -, h2, h3, h4, h5, h6, h7, hk⟩ := accessing_unchanged hc
         simp only [Outcome.step.injEq] at hk
         obtain ⟨rfl, -⟩ := hk
         exact ⟨_, _, _, rfl, .start, by rw [setConsumer_consumers, h2], by rw [setConsumer_tree, h3],
-          by rw [setConsumer_producer, h4], by rw [setConsumer_probe, h5]; rfl⟩
+          by rw [setConsumer_producer, h4], by rw [setConsumer_probe, h5]; rfl,
+          by rw [setConsumer_job, h6], by rw [setConsumer_results, h7]; rfl⟩
       | initializing =>
         dsimp only at hc
         simp only [Outcome.step.injEq] at hc
         obtain ⟨rfl, -⟩ := hc
-        exact ⟨_, _, _, rfl, .initializing, rfl, rfl, rfl, rfl⟩
+        exact ⟨_, _, _, rfl, .initializing, rfl, rfl, rfl, rfl, rfl, rfl⟩
       | waitReady v =>
         dsimp only at hc
         split at hc
@@ -292,22 +328,25 @@ theorem step_consumer_move {cfg : Config} {s s' : State} {id : Nat} {ev : Option
               (fence_unchanged s (id + 1) cfg.orderings.consumerFence).1,
             (fence_unchanged s (id + 1) cfg.orderings.consumerFence).2.1,
             (fence_unchanged s (id + 1) cfg.orderings.consumerFence).2.2.1,
-            (fence_unchanged s (id + 1) cfg.orderings.consumerFence).2.2.2⟩
+            (fence_unchanged s (id + 1) cfg.orderings.consumerFence).2.2.2.1,
+            (fence_unchanged s (id + 1) cfg.orderings.consumerFence).2.2.2.2.1,
+            (fence_unchanged s (id + 1) cfg.orderings.consumerFence).2.2.2.2.2⟩
         · cases hc
       | beforeFunc v =>
         dsimp only at hc
-        obtain ⟨s₁, -, h2, h3, h4, h5, hk⟩ := accessing_unchanged hc
-        obtain ⟨s₂, -, h2', h3', h4', h5', hk'⟩ := accessing_unchanged hk
+        obtain ⟨s₁, -, h2, h3, h4, h5, h6, h7, hk⟩ := accessing_unchanged hc
+        obtain ⟨s₂, -, h2', h3', h4', h5', h6', h7', hk'⟩ := accessing_unchanged hk
         simp only [Outcome.step.injEq] at hk'
         obtain ⟨rfl, -⟩ := hk'
         exact ⟨_, _, _, rfl, .beforeFunc v, by rw [setConsumer_consumers, h2', h2],
           by rw [setConsumer_tree, h3', h3], by rw [setConsumer_producer, h4', h4],
-          by rw [setConsumer_probe, h5', h5]; rfl⟩
+          by rw [setConsumer_probe, h5', h5]; rfl, by rw [setConsumer_job, h6', h6],
+          by rw [setConsumer_results, h7', h7]; rfl⟩
       | inFunc v =>
         dsimp only at hc
         simp only [Outcome.step.injEq] at hc
         obtain ⟨rfl, -⟩ := hc
-        exact ⟨_, _, _, rfl, .inFunc v, rfl, rfl, rfl, rfl⟩
+        exact ⟨_, _, _, rfl, .inFunc v, rfl, rfl, rfl, rfl, rfl, rfl⟩
       | walk v c =>
         dsimp only at hc
         cases hw : s.tree.walk cfg c v s.clocks[id + 1]! cfg.orderings.ticket with
@@ -316,7 +355,7 @@ theorem step_consumer_move {cfg : Config} {s s' : State} {id : Nat} {ev : Option
           rw [hw] at hc
           simp only [Outcome.step.injEq] at hc
           obtain ⟨rfl, -⟩ := hc
-          refine ⟨_, _, _, rfl, .walk v c t' vc' rmw next hw, ?_, rfl, rfl, rfl⟩
+          refine ⟨_, _, _, rfl, .walk v c t' vc' rmw next hw, ?_, rfl, rfl, rfl, rfl, rfl⟩
           cases next <;> rfl
       | finish v =>
         dsimp only at hc
@@ -326,7 +365,9 @@ theorem step_consumer_move {cfg : Config} {s s' : State} {id : Nat} {ev : Option
           congrArg (fun a => a.setIfInBounds id (nextConsumer cfg v))
             (rmwProbe_unchanged s (id + 1) cfg.orderings.finish).1,
           (rmwProbe_unchanged s (id + 1) cfg.orderings.finish).2.1,
-          (rmwProbe_unchanged s (id + 1) cfg.orderings.finish).2.2.1, rfl⟩
+          (rmwProbe_unchanged s (id + 1) cfg.orderings.finish).2.2.1, rfl,
+          (rmwProbe_unchanged s (id + 1) cfg.orderings.finish).2.2.2.2.1,
+          (rmwProbe_unchanged s (id + 1) cfg.orderings.finish).2.2.2.2.2⟩
       | done => dsimp only at hc; cases hc
   · exfalso
     rename_i hne
@@ -342,7 +383,7 @@ theorem step_consumer_treeInv {cfg : Config} {V : Nat} {s s' : State} {id : Nat}
       s.consumers[id]? = some (.finish v) → v = V ∧ V < cfg.count)
     (h : step cfg s (.consumer id) = .step s' ev) :
     TreeInv cfg V (phaseOf s'.consumers) s'.tree := by
-  obtain ⟨ph, ph', t', hph, hmove, hcs, ht, -, -⟩ := step_consumer_move h
+  obtain ⟨ph, ph', t', hph, hmove, hcs, ht, -, -, -, -⟩ := step_consumer_move h
   rw [hcs, ht, phaseOf_setIfInBounds _ _ _ (by omega)]
   have hph' := phaseOf_eq hph
   cases hmove with

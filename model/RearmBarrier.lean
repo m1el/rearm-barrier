@@ -6,8 +6,10 @@ import RearmBarrier.TreeInvariant
 import RearmBarrier.TreeInit
 import RearmBarrier.StepInvariant
 import RearmBarrier.Protocol
+import RearmBarrier.TreeCheck
 import RearmBarrier.Model
 import RearmBarrier.Spec
+import RearmBarrier.SpecProofs
 import RearmBarrier.Explore
 import RearmBarrier.Trace
 import RearmBarrier.Completion
