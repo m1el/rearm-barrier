@@ -9,6 +9,12 @@
 //! the operation, right after it, so the per-thread order of events is the
 //! program order.
 //!
+//! The hook must not synchronize the barrier's threads with each other (no
+//! locks, no allocation, no I/O while they run): anything it shares between
+//! threads adds happens-before edges the barrier does not have and hides the
+//! weak-memory schedules under test. `examples/trace.rs` shows a recorder
+//! that satisfies this.
+//!
 //! Without the feature this module is private and [`record`] is an empty
 //! inline function, so the hot path is unchanged.
 
@@ -84,18 +90,24 @@ mod hook {
 
     /// Install `hook` as the process-wide trace hook. It is called from every
     /// producer and consumer thread, so it must be safe to call concurrently.
+    ///
+    /// Install it before spawning the barrier's threads: they read it with a
+    /// `Relaxed` load, so that recording adds no acquire of its own, and
+    /// spawning is what orders the install before them.
     pub fn set_hook(hook: Hook) {
         HOOK.store(hook as *mut (), Ordering::Release);
     }
 
-    /// Remove the trace hook
+    /// Remove the trace hook. Call it only once the barrier's threads have
+    /// been joined.
     pub fn clear_hook() {
         HOOK.store(core::ptr::null_mut(), Ordering::Release);
     }
 
     #[inline]
     pub(crate) fn record(event: Event) {
-        let ptr = HOOK.load(Ordering::Acquire);
+        // `Relaxed`: `set_hook` precedes the barrier's threads by spawning
+        let ptr = HOOK.load(Ordering::Relaxed);
         if !ptr.is_null() {
             // SAFETY: the only non-null value ever stored in `HOOK` is a
             // `Hook` cast to a pointer in `set_hook`.
