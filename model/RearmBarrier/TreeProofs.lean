@@ -10,9 +10,11 @@ What is proved about `RearmBarrier.TreeModel`:
   and children, no window anywhere changes (`get_window_modifyAt`);
 * `Tree.walk` is one `fetch_add` on the node under the cursor
   (`walk_spec`): the event carries the crate's ticket index, the cursor's
-  amount and the node's counter as `old`, afterwards that node's counter is
-  `old + amount`, no window changes, and the consumer's next move is
-  decided by whether the node filled and whether it covers every worker;
+  amount and the node's counter as `old`; the tree is updated by a
+  window-preserving `modifyAt` at the cursor, so that afterwards the node
+  either counts `amount` more of the same version or has moved to the next
+  version with nothing finished; and the consumer's next move is decided
+  by whether the node filled and whether it covers every worker;
 * that decision is the crate's (`walk_crate`): expressed on the crate's
   numbers — heap index, `target_val`, `new_val` — the tree's next move is
   `if new_val == WORKERS * (v + 1) { finished } else if ticket_id == 0 ||
@@ -63,6 +65,8 @@ namespace Tree
     (Tree.mk v f r lo hi cs).hi = hi := rfl
 @[simp] theorem children_mk (v f : Nat) (r : VC) (lo hi : Nat) (cs : List Tree) :
     (Tree.mk v f r lo hi cs).children = cs := rfl
+@[simp] theorem size_mk (v f : Nat) (r : VC) (lo hi : Nat) (cs : List Tree) :
+    (Tree.mk v f r lo hi cs).size = hi - lo := rfl
 
 @[simp] theorem children_withChildren (t : Tree) (cs : List Tree) : (t.withChildren cs).children = cs := by
   cases t; rfl
@@ -137,9 +141,12 @@ theorem walk_spec {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {or
       rmw.amount = c.mergeAmount ∧
       rmw.old = node.counter ∧
       node.finished + c.mergeAmount ≤ node.size ∧
-      (t'.get c.path).map Tree.counter = some (node.counter + c.mergeAmount) ∧
-      (∀ q, ((t'.get q).map Tree.window) = (t.get q).map Tree.window) ∧
       (∃ f, Tree.Preserves f ∧ t' = t.modifyAt f c.path) ∧
+      (∃ node', t'.get c.path = some node' ∧ node'.lo = node.lo ∧ node'.hi = node.hi ∧
+        node'.children = node.children ∧
+        (node.finished + c.mergeAmount < node.size →
+          node'.version = v ∧ node'.finished = node.finished + c.mergeAmount) ∧
+        (node.finished + c.mergeAmount = node.size → node'.version = v + 1 ∧ node'.finished = 0)) ∧
       (next = .finished ↔ node.finished + c.mergeAmount = node.size ∧ node.size = cfg.workers) ∧
       (next = .stop ↔ node.finished + c.mergeAmount < node.size) ∧
       (∀ c', next = .continue c' →
@@ -164,41 +171,32 @@ theorem walk_spec {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {or
       · -- the window is not full yet
         simp only [hlt, ↓reduceIte, WalkResult.ok.injEq] at h
         obtain ⟨rfl, rfl, rfl, rfl⟩ := h
-        refine ⟨rfl, rfl, rfl, by omega, ?_, ?_, ⟨_, hpres1, rfl⟩, ?_, by simp [hlt], by simp⟩
-        · rw [Tree.get_modifyAt_self, hnode]
-          simp only [Option.map_some, Tree.counter, Tree.size, Tree.version_mk, Tree.finished_mk,
-            Tree.lo_mk, Tree.hi_mk]
-          generalize (node.hi - node.lo) * node.version = A
-          congr 1
-          omega
-        · intro q
-          exact Tree.get_window_modifyAt _ hpres1 t c.path q
+        refine ⟨rfl, rfl, rfl, by omega, ⟨_, hpres1, rfl⟩, ?_, ?_, by simp [hlt], by simp⟩
+        · refine ⟨Tree.mk node.version (node.finished + c.mergeAmount) (rmwClocks vc node.rel ord).2
+              node.lo node.hi node.children, by rw [Tree.get_modifyAt_self, hnode]; rfl, rfl, rfl, rfl,
+            fun _ => ⟨hv, rfl⟩, fun h' => absurd h' (Nat.ne_of_lt hlt)⟩
         · exact ⟨fun h' => by simp at h', fun h' => absurd h'.1 (Nat.ne_of_lt hlt)⟩
       · by_cases hgt : node.size < node.finished + c.mergeAmount
         · simp only [hlt, gt_iff_lt, hgt, ↓reduceIte, reduceCtorEq] at h
         · -- the window filled
           have heq : node.finished + c.mergeAmount = node.size := by omega
-          have hcounter : Option.map Tree.counter ((t.modifyAt (fun n => Tree.mk (n.version + 1) 0
-              (rmwClocks vc node.rel ord).2 n.lo n.hi n.children) c.path).get c.path)
-              = some (node.counter + c.mergeAmount) := by
-            rw [Tree.get_modifyAt_self, hnode]
-            simp only [Option.map_some, Tree.counter, Tree.size, Tree.version_mk, Tree.finished_mk,
-              Tree.lo_mk, Tree.hi_mk, Nat.mul_add, Nat.mul_one, Nat.add_zero]
-            have heq' := heq
-            simp only [Tree.size] at heq'
-            generalize (node.hi - node.lo) * node.version = A
-            congr 1
-            omega
+          have hnode' : ∃ node', (t.modifyAt (fun n => Tree.mk (n.version + 1) 0
+              (rmwClocks vc node.rel ord).2 n.lo n.hi n.children) c.path).get c.path = some node' ∧
+              node'.lo = node.lo ∧ node'.hi = node.hi ∧ node'.children = node.children ∧
+              (node.finished + c.mergeAmount < node.size →
+                node'.version = v ∧ node'.finished = node.finished + c.mergeAmount) ∧
+              (node.finished + c.mergeAmount = node.size → node'.version = v + 1 ∧ node'.finished = 0) :=
+            ⟨Tree.mk (node.version + 1) 0 (rmwClocks vc node.rel ord).2 node.lo node.hi node.children,
+              by rw [Tree.get_modifyAt_self, hnode]; rfl, rfl, rfl, rfl,
+              fun h' => absurd heq (Nat.ne_of_lt h'), fun _ => ⟨by simp [hv], rfl⟩⟩
           simp only [hlt, gt_iff_lt, hgt, ↓reduceIte] at h
           by_cases hall : node.size = cfg.workers
           · -- every worker: finished
             simp only [hall, ↓reduceIte, WalkResult.ok.injEq] at h
             obtain ⟨rfl, rfl, rfl, rfl⟩ := h
-            refine ⟨rfl, rfl, rfl, by omega, hcounter, ?_, ⟨_, hpres2, rfl⟩, by simp [heq, hall], ?_,
+            refine ⟨rfl, rfl, rfl, by omega, ⟨_, hpres2, rfl⟩, hnode', by simp [heq, hall], ?_,
               by simp⟩
-            · intro q
-              exact Tree.get_window_modifyAt _ hpres2 t c.path q
-            · exact ⟨fun h' => by simp at h', fun h' => absurd heq (Nat.ne_of_lt h')⟩
+            exact ⟨fun h' => by simp at h', fun h' => absurd heq (Nat.ne_of_lt h')⟩
           · simp only [hall, ↓reduceIte] at h
             by_cases hnil : c.path = []
             · simp only [hnil, List.isEmpty_nil, ↓reduceIte, reduceCtorEq] at h
@@ -209,9 +207,7 @@ theorem walk_spec {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {or
                 | cons _ _ => rfl
               simp only [hne, Bool.false_eq_true, ↓reduceIte, WalkResult.ok.injEq] at h
               obtain ⟨rfl, rfl, rfl, rfl⟩ := h
-              refine ⟨rfl, rfl, rfl, by omega, hcounter, ?_, ⟨_, hpres2, rfl⟩, ?_, ?_, ?_⟩
-              · intro q
-                exact Tree.get_window_modifyAt _ hpres2 t c.path q
+              refine ⟨rfl, rfl, rfl, by omega, ⟨_, hpres2, rfl⟩, hnode', ?_, ?_, ?_⟩
               · exact ⟨fun h' => by simp at h', fun h' => absurd h'.2 hall⟩
               · exact ⟨fun h' => by simp at h', fun h' => absurd heq (Nat.ne_of_lt h')⟩
               · intro c' hc'
@@ -252,7 +248,7 @@ theorem walk_crate {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {o
     (hsize : node.size ≤ cfg.workers) :
     next.toCrate cfg.cluster =
       crateNext cfg.workers cfg.cluster rmw.ticketId node.size v (rmw.old + rmw.amount) := by
-  obtain ⟨node', hnode', hv, hid, hamount, hold, hle, _, _, _, hfin, hstop, hcont⟩ := walk_spec h
+  obtain ⟨node', hnode', hv, hid, hamount, hold, hle, _, _, hfin, hstop, hcont⟩ := walk_spec h
   rw [hnode] at hnode'
   obtain rfl := Option.some.inj hnode'
   subst hv
@@ -675,7 +671,7 @@ theorem walk_wf {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {ord 
     {t' : Tree} {vc' : VC} {rmw : Rmw} {next : Next}
     (hwf : Wf cfg.cluster cfg.workers t) (h : t.walk cfg c v vc ord = .ok t' vc' rmw next) :
     Wf cfg.cluster cfg.workers t' := by
-  obtain ⟨_, _, _, _, _, _, _, _, _, ⟨f, hf, rfl⟩, _⟩ := walk_spec h
+  obtain ⟨_, _, _, _, _, _, _, ⟨f, hf, rfl⟩, _⟩ := walk_spec h
   exact Wf.modifyAt hf _ hwf
 
 /-- On a well-formed tree the walk decides as the crate does, with no side

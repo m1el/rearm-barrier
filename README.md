@@ -100,6 +100,18 @@ transition system and is differentially tested against the crate.
   every walk step (`walk_wf`), gives every node's `target_val` as the sum of
   its children's (`Wf.sum_children`), and discharges the side conditions of
   the decision theorem along every execution (`walk_crate_wf`).
+* `RearmBarrier/TreeInvariant.lean` restates the counting invariant as a
+  proposition, `TreeInv`, indexed by paths (so no induction over the nested
+  tree is needed) and abstracting the consumers as a function, and proves
+  that every consumer step preserves it: the `fetch_add` on a ticket
+  (`walk_preserves`, the core: the node under the cursor, its parent, and
+  every other node), the steps that only change a phase
+  (`phase_preserves`), starting to walk at the consumer's leaf
+  (`startWalk_preserves`), and, once every consumer has finished the
+  version, moving the invariant to the next version (`advance_preserves`,
+  which shows every live node has advanced). The hypotheses are exactly
+  what the global protocol supplies: a walking consumer is at the
+  producer's version and below `count`.
 * `RearmBarrier/Completion.lean` is the proved part of the protocol. It isolates one
   version's completion as a "game" on the tree, meaning a nondeterministic
   transition system (a `Step` relation whose rules may fire anywhere, in
@@ -172,9 +184,13 @@ What is proved versus checked: the completion game in `Completion.lean`
 is proved for all shapes and all orderings; so are the path/index mapping
 and, for the executable tree, the update, the single-step behaviour of
 `walk` and its agreement with the crate's decision rule, and the window of
-the root. Not proved: that `Tree.invariant` (a `partial def`) is an inductive
-invariant of `step`, and the refinement from the executable tree to the
-game; both are checked by exploration and by replaying crate traces. The
+the root. Not proved: the global protocol invariant relating the probe, the
+producer's phase and the consumers' versions, which is what turns the
+per-step results of `TreeInvariant.lean` into a theorem about `step` on
+`State` (the initial state's `leaves` / `leaf_unique` facts about
+`Cursor.start` are also still unproved), and the refinement from the
+executable tree to the game; these are checked by exploration and by
+replaying crate traces. The
 step from the completing `fetch_add` to the producer's `complete` (one
 Release on the probe, one Acquire fence) and the per-version re-arming are
 likewise only checked. Not covered at all: stale relaxed loads that change
