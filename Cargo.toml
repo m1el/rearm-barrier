@@ -1,0 +1,10 @@
+[package]
+name = "rearm-barrier"
+version = "0.1.0"
+edition = "2021"
+description = "A re-arming broadcast barrier for low-latency benchmarking of tasks across a fixed set of worker threads"
+license = "MIT OR Apache-2.0"
+categories = ["concurrency", "no-std"]
+keywords = ["barrier", "spin", "broadcast", "benchmark"]
+
+[dependencies]
