@@ -3,15 +3,16 @@ import RearmBarrier
 open RearmBarrier
 
 def usage : String :=
-  "usage:\n" ++
-  "  rearm-model storage MAX_WORKERS MAX_CLUSTER   print `w c ticket_storage(w, c)` for every shape\n" ++
-  "  rearm-model explore WORKERS CLUSTER COUNT [MAX_STATES] [WEAKEN...]\n" ++
-  "                                               exhaustively check every interleaving; WEAKEN is any of\n" ++
-  "                                               publish, ticket, finish (fetch_add -> Relaxed),\n" ++
-  "                                               producer-fence, consumer-fence (drop the Acquire fence)\n" ++
-  "  rearm-model check TRACE_FILE                  check that a crate trace is an execution of the model\n" ++
-  "  rearm-model simulate WORKERS CLUSTER COUNT SEED\n" ++
-  "                                               print a trace of the model under a random schedule\n"
+  "usage: rearm-model [flat|tree|both] COMMAND ...\n" ++
+  "  the engine selects the ticket representation: the crate's flat heap array, the\n" ++
+  "  structural tree, or both in lockstep (the default), which faults if they disagree\n\n" ++
+  "  storage MAX_WORKERS MAX_CLUSTER       print `w c ticket_storage(w, c)` for every shape\n" ++
+  "  explore WORKERS CLUSTER COUNT [MAX_STATES] [WEAKEN...]\n" ++
+  "                                       exhaustively check every interleaving; WEAKEN is any of\n" ++
+  "                                       publish, ticket, finish (fetch_add -> Relaxed),\n" ++
+  "                                       producer-fence, consumer-fence (drop the Acquire fence)\n" ++
+  "  check TRACE_FILE                      check that a crate trace is an execution of the model\n" ++
+  "  simulate WORKERS CLUSTER COUNT SEED   print a trace of the model under a random schedule\n"
 
 def fail (msg : String) : IO UInt32 := do
   IO.eprintln msg
@@ -44,7 +45,11 @@ def weaken (o : Orderings) : String → Option Orderings
   | "consumer-fence" => some { o with consumerFence := false }
   | _ => none
 
-def cmdExplore (w c n : String) (rest : List String) : IO UInt32 := do
+section
+
+variable {τ κ : Type} [BEq τ] [Hashable τ] [Inhabited τ] [BEq κ] [Hashable κ] [Inhabited κ] [ToString κ]
+
+def cmdExplore (E : Engine τ κ) (w c n : String) (rest : List String) : IO UInt32 := do
   let mut cfg : Config := { workers := ← nat! w, cluster := ← nat! c, count := ← nat! n }
   if !cfg.valid then
     return ← fail s!"invalid configuration: WORKERS = {cfg.workers}, CLUSTER = {cfg.cluster}"
@@ -61,11 +66,11 @@ def cmdExplore (w c n : String) (rest : List String) : IO UInt32 := do
       | none => return ← fail s!"unknown argument `{arg}`\n{usage}"
   if !weakened.isEmpty then
     IO.println s!"weakened orderings: {weakened}"
-  let res := explore cfg maxStates
+  let res := explore E cfg maxStates
   match res.failure with
   | some (msg, path, s) =>
     IO.println s!"FAIL {cfg.workers} {cfg.cluster} {cfg.count}: {msg}"
-    IO.println s!"state:\n{s.describe}"
+    IO.println s!"state:\n{s.describe E}"
     IO.println s!"path ({path.length} steps):\n{showPath path}"
     return 1
   | none =>
@@ -75,23 +80,23 @@ def cmdExplore (w c n : String) (rest : List String) : IO UInt32 := do
     IO.println s!"OK {cfg.workers} {cfg.cluster} {cfg.count}: {res.states} states, {res.transitions} transitions, ticket_storage = {cfg.storage}"
     return 0
 
-def cmdCheck (file : String) : IO UInt32 := do
+def cmdCheck (E : Engine τ κ) (file : String) : IO UInt32 := do
   let text ← IO.FS.readFile file
   match parseTrace text with
   | .error m => fail s!"FAIL {file}: {m}"
   | .ok tr =>
-    match replay tr with
+    match replay E tr with
     | .error m => fail s!"FAIL {file} (WORKERS = {tr.cfg.workers}, CLUSTER = {tr.cfg.cluster}, count = {tr.cfg.count}):\n{m}"
     | .ok res =>
-      IO.println s!"OK {file}: {res.replayed} events, WORKERS = {tr.cfg.workers}, CLUSTER = {tr.cfg.cluster}, count = {tr.cfg.count}, final tickets = {res.final.tickets}"
+      IO.println s!"OK {file}: {res.replayed} events, WORKERS = {tr.cfg.workers}, CLUSTER = {tr.cfg.cluster}, count = {tr.cfg.count}, final {E.summary res.final.tickets}"
       return 0
 
-def cmdSimulate (w c n seed : String) : IO UInt32 := do
+def cmdSimulate (E : Engine τ κ) (w c n seed : String) : IO UInt32 := do
   let cfg : Config := { workers := ← nat! w, cluster := ← nat! c, count := ← nat! n }
   if !cfg.valid then
     return ← fail s!"invalid configuration: WORKERS = {cfg.workers}, CLUSTER = {cfg.cluster}"
   let seed ← nat! seed
-  match simulate cfg seed.toUInt64 with
+  match simulate E cfg seed.toUInt64 with
   | .error m => fail s!"FAIL: {m}"
   | .ok (lines, _) =>
     IO.println s!"config {cfg.workers} {cfg.cluster} {cfg.count}"
@@ -99,10 +104,19 @@ def cmdSimulate (w c n seed : String) : IO UInt32 := do
       IO.println l
     return 0
 
-def main (args : List String) : IO UInt32 := do
+def dispatch (E : Engine τ κ) (args : List String) : IO UInt32 :=
   match args with
   | ["storage", w, c] => cmdStorage w c
-  | "explore" :: w :: c :: n :: rest => cmdExplore w c n rest
-  | ["check", file] => cmdCheck file
-  | ["simulate", w, c, n, seed] => cmdSimulate w c n seed
+  | "explore" :: w :: c :: n :: rest => cmdExplore E w c n rest
+  | ["check", file] => cmdCheck E file
+  | ["simulate", w, c, n, seed] => cmdSimulate E w c n seed
   | _ => fail usage
+
+end
+
+def main (args : List String) : IO UInt32 := do
+  match args with
+  | "flat" :: rest => dispatch Flat.engine rest
+  | "tree" :: rest => dispatch TreeModel.engine rest
+  | "both" :: rest => dispatch bothEngines rest
+  | _ => dispatch bothEngines args

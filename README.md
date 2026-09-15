@@ -65,6 +65,23 @@ transition system and is differentially tested against the crate.
   publishing, AcqRel on the tickets, Release on finishing, and the Acquire
   fences after the spin loops. Every non-atomic access must happen after
   each conflicting earlier one, otherwise the step is a data race.
+* The completion tickets are abstracted as a *ticket engine*, and there
+  are two: `RearmBarrier/Flat.lean` mirrors the crate's heap-indexed array
+  and its `win_id` / `win_size` arithmetic literally, and
+  `RearmBarrier/TreeModel.lean` is a structural tree whose nodes own a
+  window of consumers and count `(version, finished)`, with the crate's
+  counter being `size * version + finished` and its `WORKERS * (version +
+  1)` test being "the node covering every worker fills". The tree engine
+  also checks the counting invariant in every state: a leaf's `finished`
+  is the number of its consumers past their `fetch_add`, a live inner
+  node's `finished` plus the contributions in flight towards it is the
+  size of its children one version ahead, and the ancestors of the node
+  covering every worker are never touched. `RearmBarrier/Product.lean`
+  runs both engines in lockstep and faults if they disagree on a ticket,
+  an amount, an old value, a clock or the consumer's next move, so
+  exploring with it (the default) is a bisimulation check of the two
+  representations; `heapIndex_append` and `parent_heapIndex` prove that
+  the tree's paths map onto the crate's heap layout.
 * `RearmBarrier/Spec.lean` states what the barrier promises: `func` sees
   the job of its version, `complete` sees every result of its version, no
   conflicting accesses to the job or result slots overlap, the walk stays
@@ -77,6 +94,7 @@ transition system and is differentially tested against the crate.
 ```
 cd model && lake build
 .lake/build/bin/rearm-model explore 5 2 2        # every interleaving of 5 workers, fan-in 2, 2 versions
+.lake/build/bin/rearm-model tree explore 5 2 2   # ... on the tree engine alone (also: flat, both)
 .lake/build/bin/rearm-model explore 3 2 2 consumer-fence   # ... with the consumer's Acquire fence removed
 .lake/build/bin/rearm-model check trace.txt      # is this crate trace an execution of the model?
 .lake/build/bin/rearm-model simulate 7 3 4 42    # a random execution of the model, in trace syntax

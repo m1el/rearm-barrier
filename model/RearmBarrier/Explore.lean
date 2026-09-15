@@ -12,44 +12,48 @@ state and deadlock freedom in every state without an enabled thread.
 
 namespace RearmBarrier
 
-structure ExploreResult where
+variable {τ κ : Type} [BEq τ] [Hashable τ] [BEq κ] [Hashable κ]
+
+structure ExploreResult (τ κ : Type) where
   states : Nat
   transitions : Nat
   /-- the first problem found, with the path (thread, event) leading to it -/
-  failure : Option (String × List (Thread × Option Event) × State)
+  failure : Option (String × List (Thread × Option Event) × State τ κ)
   /-- the state budget was exhausted -/
   truncated : Bool
 deriving Inhabited
 
-private structure Frontier where
-  stack : List State
-  visited : Std.HashSet State
-  parents : Std.HashMap State (Thread × State)
+private structure Frontier (τ κ : Type) [BEq τ] [Hashable τ] [BEq κ] [Hashable κ] where
+  stack : List (State τ κ)
+  visited : Std.HashSet (State τ κ)
+  parents : Std.HashMap (State τ κ) (Thread × State τ κ)
   states : Nat
   transitions : Nat
 
-private partial def pathTo (cfg : Config) (parents : Std.HashMap State (Thread × State))
-    (s : State) (acc : List (Thread × Option Event)) : List (Thread × Option Event) :=
+private partial def pathTo (E : Engine τ κ) (cfg : Config)
+    (parents : Std.HashMap (State τ κ) (Thread × State τ κ))
+    (s : State τ κ) (acc : List (Thread × Option Event)) : List (Thread × Option Event) :=
   match parents[s]? with
   | none => acc
   | some (t, p) =>
-    let ev := match step cfg p t with
+    let ev := match step E cfg p t with
       | .step _ ev => ev
       | _ => none
-    pathTo cfg parents p ((t, ev) :: acc)
+    pathTo E cfg parents p ((t, ev) :: acc)
 
-private partial def loop (cfg : Config) (maxStates : Nat) (f : Frontier) : ExploreResult :=
+private partial def loop [Inhabited τ] [Inhabited κ] (E : Engine τ κ) (cfg : Config) (maxStates : Nat)
+    (f : Frontier τ κ) : ExploreResult τ κ :=
   match f.stack with
   | [] => { states := f.states, transitions := f.transitions, failure := none, truncated := false }
   | s :: rest =>
-    let fail (msg : String) : ExploreResult :=
+    let fail (msg : String) : ExploreResult τ κ :=
       { states := f.states, transitions := f.transitions,
-        failure := some (msg, pathTo cfg f.parents s [], s), truncated := false }
-    match violations cfg s with
+        failure := some (msg, pathTo E cfg f.parents s [], s), truncated := false }
+    match violations E cfg s with
     | msg :: _ => fail msg
     | [] =>
       let succ := (threads cfg).filterMap fun t =>
-        match step cfg s t with
+        match step E cfg s t with
         | .blocked => none
         | .step s' _ => some (Sum.inl (t, s'))
         | .fault m => some (Sum.inr s!"{t}: {m}")
@@ -77,12 +81,13 @@ private partial def loop (cfg : Config) (maxStates : Nat) (f : Frontier) : Explo
           if f'.states > maxStates then
             { states := f'.states, transitions := f'.transitions, failure := none, truncated := true }
           else
-            loop cfg maxStates f'
+            loop E cfg maxStates f'
 
 /-- Explore every interleaving of `cfg`, visiting at most `maxStates` states. -/
-def explore (cfg : Config) (maxStates : Nat := 2000000) : ExploreResult :=
-  let s0 := State.init cfg
-  loop cfg maxStates
+def explore [Inhabited τ] [Inhabited κ] (E : Engine τ κ) (cfg : Config) (maxStates : Nat := 2000000) :
+    ExploreResult τ κ :=
+  let s0 := State.init E cfg
+  loop E cfg maxStates
     { stack := [s0], visited := Std.HashSet.emptyWithCapacity.insert s0, parents := {},
       states := 1, transitions := 0 }
 

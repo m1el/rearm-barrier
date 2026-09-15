@@ -11,38 +11,41 @@ shape of the state machines they say:
 * `complete` is called once per version, after every consumer's `func` for
   that version, and sees every consumer's result of that version;
 * no two accesses to the job slot or a result slot overlap unless both are
-  shared reads (the `Send`/`Sync` argument of the crate);
-* the ticket walk never indexes outside `ticket_storage` (the Rust code would
-  panic).
+  shared reads (the `Send`/`Sync` argument of the crate), and, via the
+  happens-before tracking in `step`, every such pair is ordered;
+* the counters never run ahead of the protocol.
 
-`deadlockFree` is not a state invariant: the explorer checks that every
-reachable state that has no enabled thread is final.
+Out-of-range tickets are faults of the engine's `step`, and `deadlockFree`
+is not a state invariant: the explorer checks that every reachable state
+that has no enabled thread is final.
 -/
 
 namespace RearmBarrier
 
-def ConsumerPhase.insideFunc : ConsumerPhase → Bool
+variable {τ κ : Type} [BEq κ]
+
+def ConsumerPhase.insideFunc : ConsumerPhase κ → Bool
   | .inFunc _ => true
   | _ => false
 
-def ConsumerPhase.writesResult : ConsumerPhase → Bool
+def ConsumerPhase.writesResult : ConsumerPhase κ → Bool
   | .inFunc _ | .initializing => true
   | _ => false
 
 /-- All violated invariants of `s`, as human-readable messages. -/
-def violations (cfg : Config) (s : State) : List String := Id.run do
+def violations (E : Engine τ κ) (cfg : Config) (s : State τ κ) : List String := Id.run do
   let mut out : List String := []
   let cs := s.consumers.toList.zipIdx
   -- non-atomic accesses to the job slot
   if let .writing v := s.producer then
     for (ph, i) in cs do
       if ph.insideFunc then
-        out := out ++ [s!"race on the job slot: producer writes job {v} while consumer {i} is inside func ({ph})"]
+        out := out ++ [s!"race on the job slot: producer writes job {v} while consumer {i} is inside func"]
   -- non-atomic accesses to the result slots
   if let .completing v := s.producer then
     for (ph, i) in cs do
       if ph.writesResult then
-        out := out ++ [s!"race on result slot {i}: producer is inside complete for version {v} while consumer {i} is {ph}"]
+        out := out ++ [s!"race on result slot {i}: producer is inside complete for version {v} while consumer {i} writes its result"]
   -- the job seen by func
   for (ph, i) in cs do
     if let .inFunc v := ph then
@@ -53,22 +56,14 @@ def violations (cfg : Config) (s : State) : List String := Id.run do
     for (r, i) in s.results.toList.zipIdx do
       if r != some v then
         out := out ++ [s!"complete for version {v} sees result {optNat r} in slot {i}"]
-  -- the walk stays inside the ticket array
-  for (ph, i) in cs do
-    if let .walk _ w := ph then
-      if w.ticketId ≥ cfg.storage then
-        out := out ++ [s!"consumer {i} is about to touch ticket {w.ticketId}, but ticket_storage = {cfg.storage}"]
   -- counters never run ahead of the protocol
   if s.probe > 2 * cfg.count then
     out := out ++ [s!"probe = {s.probe} exceeds 2 * count = {2 * cfg.count}"]
-  for (t, i) in s.tickets.toList.zipIdx do
-    if t > cfg.workers * cfg.count then
-      out := out ++ [s!"ticket {i} = {t} exceeds WORKERS * count = {cfg.workers * cfg.count}"]
-  return out
+  return out ++ E.violations cfg s.tickets s.consumers
 
 /-- What must hold once every thread has returned. -/
-def finalViolations (cfg : Config) (s : State) : List String :=
-  violations cfg s ++
+def finalViolations (E : Engine τ κ) (cfg : Config) (s : State τ κ) : List String :=
+  violations E cfg s ++
   (if !s.isFinal then ["not every thread has finished"] else []) ++
   (if s.probe != 2 * cfg.count then [s!"final probe = {s.probe}, expected {2 * cfg.count}"] else [])
 

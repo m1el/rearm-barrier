@@ -5,7 +5,7 @@ import RearmBarrier.Tree
 
 Every thread of `RearmBarrier::producer` / `RearmBarrier::consumer` is a
 small state machine; the shared memory is the `ticket_probe` counter, the
-`tickets` array, the job slot and the per-worker result slots. A `step`
+completion tickets, the job slot and the per-worker result slots. A `step`
 executes one action of one thread. Actions are
 
 * an atomic read-modify-write (`fetch_add`) or the *successful* load of a
@@ -16,6 +16,16 @@ executes one action of one thread. Actions are
 
 Loads inside a spin loop that do not satisfy the loop condition are not
 modelled as steps: the thread is simply not enabled.
+
+## Ticket engines
+
+The completion tickets are the only part of the state with a non-trivial
+representation, and the only part whose update logic is interesting. They are
+abstracted as an `Engine τ κ`: `τ` is the representation of all tickets and
+`κ` a consumer's cursor into them during its completion walk. Two engines are
+provided — `RearmBarrier.Flat` mirrors the crate's heap-indexed array, and
+`RearmBarrier.TreeModel` is a structural tree — plus `RearmBarrier.Product`,
+which runs two engines in lockstep and faults if they disagree.
 
 ## Memory model
 
@@ -117,16 +127,9 @@ inductive ProducerPhase
   | done
 deriving Repr, BEq, Hashable, DecidableEq, Inhabited
 
-/-- The locals of the ticket walk at the end of a consumer's iteration. -/
-structure Walk where
-  ticketId : Nat
-  winId : Nat
-  winSize : Nat
-  mergeAmount : Nat
-deriving Repr, BEq, Hashable, DecidableEq, Inhabited
-
-/-- The program counter of a consumer thread. -/
-inductive ConsumerPhase
+/-- The program counter of a consumer thread; `κ` is its cursor into the
+tickets during the completion walk. -/
+inductive ConsumerPhase (κ : Type)
   /-- has claimed its ID, has not yet written its initial state -/
   | start
   /-- writing the initial state into its result slot -/
@@ -137,12 +140,22 @@ inductive ConsumerPhase
   | beforeFunc (version : Nat)
   /-- inside `func` (holding `&T` and `&mut R`) -/
   | inFunc (version : Nat)
-  /-- about to `fetch_add` ticket `w.ticketId` -/
-  | walk (version : Nat) (w : Walk)
+  /-- about to `fetch_add` the ticket under the cursor -/
+  | walk (version : Nat) (cursor : κ)
   /-- about to `fetch_add` the probe: this consumer completed the version -/
   | finish (version : Nat)
   | done
-deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+deriving Repr, BEq, Hashable, Inhabited
+
+def ConsumerPhase.mapCursor {κ κ' : Type} (f : κ → κ') : ConsumerPhase κ → ConsumerPhase κ'
+  | .start => .start
+  | .initializing => .initializing
+  | .waitReady v => .waitReady v
+  | .beforeFunc v => .beforeFunc v
+  | .inFunc v => .inFunc v
+  | .walk v c => .walk v (f c)
+  | .finish v => .finish v
+  | .done => .done
 
 inductive Thread
   | producer
@@ -208,6 +221,8 @@ def Slot.read (s : Slot) (t : Nat) (vc : VC) : Slot :=
 def Slot.write (s : Slot) (t : Nat) (vc : VC) : Slot :=
   { lastWrite := some (t, vc[t]!), reads := VC.zero s.reads.size }
 
+/-! ## Events -/
+
 /-- The observable actions; these are exactly the lines of a trace file. -/
 inductive Event
   /-- producer finished writing job `version` -/
@@ -230,70 +245,119 @@ inductive Event
   | finish (id version old : Nat)
 deriving Repr, BEq, Hashable, DecidableEq, Inhabited
 
-structure State where
+/-! ## Ticket engines -/
+
+/-- What one `fetch_add` on a ticket looked like: the heap index of the
+ticket, the amount added and the value returned. -/
+structure Rmw where
+  ticketId : Nat
+  amount : Nat
+  old : Nat
+deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+
+instance : ToString Rmw := ⟨fun r => s!"ticket {r.ticketId} += {r.amount} (was {r.old})"⟩
+
+/-- What a consumer does after a `fetch_add` on a ticket. -/
+inductive Next (κ : Type)
+  /-- `new_val == WORKERS * (version + 1)`: bump the probe -/
+  | finished
+  /-- the root was reached, or the window is not full yet: this version is done -/
+  | stop
+  /-- the window filled: continue at the parent -/
+  | continue (cursor : κ)
+deriving Repr, BEq, Hashable, Inhabited
+
+def Next.kind {κ : Type} : Next κ → String
+  | .finished => "finished"
+  | .stop => "stop"
+  | .continue _ => "continue"
+
+inductive EngineResult (τ κ : Type)
+  /-- the tickets after the `fetch_add`, the thread's clock after the
+  acquire part of the ordering, the operation performed, and what follows -/
+  | ok (tickets : τ) (vc : VC) (rmw : Rmw) (next : Next κ)
+  /-- the Rust code would panic (an index out of bounds) -/
+  | fault (msg : String)
+deriving Inhabited
+
+/-- A representation `τ` of the completion tickets together with the logic of
+one iteration of the consumer's walk, using cursor type `κ`. -/
+structure Engine (τ κ : Type) where
+  /-- the tickets of a fresh barrier -/
+  init : Config → τ
+  /-- the cursor with which consumer `id` starts its walk -/
+  start : Config → Nat → κ
+  /-- one `fetch_add(merge_amount)` by a consumer at version `version` whose
+  clock is `vc`, with the given ordering -/
+  step : Config → τ → κ → (version : Nat) → VC → MemOrd → EngineResult τ κ
+  /-- invariants of the tickets, given every consumer's phase (a walking
+  consumer carries a contribution that is in flight) -/
+  violations : Config → τ → Array (ConsumerPhase κ) → List String
+  /-- one-line summary of the tickets, for reports -/
+  summary : τ → String
+
+/-! ## State -/
+
+structure State (τ κ : Type) where
   probe : Nat
-  tickets : Array Nat
+  tickets : τ
   /-- `some v` once job `v` is written; `none` while it is being overwritten -/
   job : Option Nat
   /-- `some v` once the slot holds the result of version `v` -/
   results : Array (Option Nat)
   producer : ProducerPhase
-  consumers : Array ConsumerPhase
+  consumers : Array (ConsumerPhase κ)
   /-- vector clock of every thread -/
   clocks : Array VC
   /-- release clock of `ticket_probe` -/
   probeRel : VC
-  /-- release clock of every ticket -/
-  ticketRel : Array VC
   /-- happens-before bookkeeping of the job slot -/
   jobSlot : Slot
   /-- happens-before bookkeeping of every result slot -/
   resultSlots : Array Slot
 deriving Repr, BEq, Hashable, Inhabited
 
+variable {τ κ : Type}
+
 /-- The barrier right after `new`, with the producer and every consumer
 attached (locks taken) but before any of them has done anything. -/
-def State.init (cfg : Config) : State :=
+def State.init (E : Engine τ κ) (cfg : Config) : State τ κ :=
   { probe := 0
-    tickets := Array.replicate cfg.storage 0
+    tickets := E.init cfg
     job := none
     results := Array.replicate cfg.workers none
     producer := if cfg.count = 0 then .done else .beforeWrite 0
     consumers := Array.replicate cfg.workers .start
     clocks := Array.replicate (cfg.workers + 1) (VC.zero (cfg.workers + 1))
     probeRel := VC.zero (cfg.workers + 1)
-    ticketRel := Array.replicate cfg.storage (VC.zero (cfg.workers + 1))
     jobSlot := Slot.init (cfg.workers + 1)
     resultSlots := Array.replicate cfg.workers (Slot.init (cfg.workers + 1)) }
 
 /-! ### Clock operations -/
 
 /-- Advance thread `t`'s own clock: every step is a new epoch. -/
-def State.tick (s : State) (t : Nat) : State :=
+def State.tick (s : State τ κ) (t : Nat) : State τ κ :=
   { s with clocks := s.clocks.modify t fun vc => vc.modify t (· + 1) }
 
 /-- Thread `t` acquires the release clock of `ticket_probe`. -/
-def State.acquireProbe (s : State) (t : Nat) : State :=
+def State.acquireProbe (s : State τ κ) (t : Nat) : State τ κ :=
   { s with clocks := s.clocks.modify t (VC.join · s.probeRel) }
 
-def State.releaseProbe (s : State) (t : Nat) : State :=
+def State.releaseProbe (s : State τ κ) (t : Nat) : State τ κ :=
   { s with probeRel := s.probeRel.join s.clocks[t]! }
 
-def State.acquireTicket (s : State) (t i : Nat) : State :=
-  { s with clocks := s.clocks.modify t (VC.join · s.ticketRel[i]!) }
-
-def State.releaseTicket (s : State) (t i : Nat) : State :=
-  { s with ticketRel := s.ticketRel.modify i (VC.join · s.clocks[t]!) }
-
 /-- Clock effects of a `fetch_add` on `ticket_probe` by thread `t`. -/
-def State.rmwProbe (s : State) (t : Nat) (ord : MemOrd) : State :=
+def State.rmwProbe (s : State τ κ) (t : Nat) (ord : MemOrd) : State τ κ :=
   let s := if ord.acquires then s.acquireProbe t else s
   if ord.releases then s.releaseProbe t else s
 
-/-- Clock effects of a `fetch_add` on ticket `i` by thread `t`. -/
-def State.rmwTicket (s : State) (t i : Nat) (ord : MemOrd) : State :=
-  let s := if ord.acquires then s.acquireTicket t i else s
-  if ord.releases then s.releaseTicket t i else s
+/-- Clock effects of a `fetch_add` on a ticket whose release clock is `rel`,
+by a thread with clock `vc`: the thread's new clock and the ticket's new
+release clock. -/
+def rmwTicketClocks (vc rel : VC) (ord : MemOrd) : VC × VC :=
+  let vc := if ord.acquires then vc.join rel else vc
+  let rel := if ord.releases then rel.join vc else rel
+  (vc, rel)
 
 /-- A non-atomic access to the job slot or a result slot. -/
 inductive Access
@@ -304,7 +368,7 @@ inductive Access
 deriving Repr
 
 /-- Perform a non-atomic access by thread `t`, or report the data race. -/
-def State.access (s : State) (t : Nat) (a : Access) : Except String State :=
+def State.access (s : State τ κ) (t : Nat) (a : Access) : Except String (State τ κ) :=
   let vc := s.clocks[t]!
   let race (loc : String) (what : String) (conflict : String) :=
     s!"data race on {loc}: the {what} by `{threadOf t}` is not ordered after {conflict}"
@@ -327,20 +391,23 @@ def State.access (s : State) (t : Nat) (a : Access) : Except String State :=
       | some c => throw (race s!"result slot {i}" "write (inside complete)" c)
       | none => pure { s with resultSlots := s.resultSlots.modify i (·.write t vc) }
 
+/-! ## Steps -/
+
 /-- Result of trying to run one action of one thread. -/
-inductive Outcome
+inductive Outcome (τ κ : Type)
   /-- the thread is finished or its spin condition does not hold -/
   | blocked
-  | step (s : State) (ev : Option Event)
+  | step (s : State τ κ) (ev : Option Event)
   /-- the model itself cannot continue (e.g. an index out of bounds in the
   Rust code, which would panic) -/
   | fault (msg : String)
   /-- the step is a non-atomic access that races with an earlier one -/
   | race (msg : String)
-deriving Repr, Inhabited
+deriving Inhabited
 
 /-- Run a non-atomic access and continue with the state, or report the race. -/
-def Outcome.accessing (s : State) (t : Nat) (a : Access) (k : State → Outcome) : Outcome :=
+def Outcome.accessing (s : State τ κ) (t : Nat) (a : Access)
+    (k : State τ κ → Outcome τ κ) : Outcome τ κ :=
   match s.access t a with
   | .ok s => k s
   | .error m => .race m
@@ -348,17 +415,10 @@ def Outcome.accessing (s : State) (t : Nat) (a : Access) (k : State → Outcome)
 def nextProducer (cfg : Config) (v : Nat) : ProducerPhase :=
   if v + 1 < cfg.count then .beforeWrite (v + 1) else .done
 
-def nextConsumer (cfg : Config) (v : Nat) : ConsumerPhase :=
+def nextConsumer (cfg : Config) (v : Nat) : ConsumerPhase κ :=
   if v + 1 < cfg.count then .waitReady (v + 1) else .done
 
-/-- The locals at the start of consumer `id`'s ticket walk. -/
-def Walk.start (cfg : Config) (id : Nat) : Walk :=
-  { ticketId := cfg.treeSize + id / cfg.cluster
-    winId := id / cfg.cluster
-    winSize := cfg.cluster
-    mergeAmount := 1 }
-
-def producerStep (cfg : Config) (s : State) : Outcome :=
+def producerStep (cfg : Config) (s : State τ κ) : Outcome τ κ :=
   let t := threadIndex .producer
   match s.producer with
   | .beforeWrite v =>
@@ -382,10 +442,10 @@ def producerStep (cfg : Config) (s : State) : Outcome :=
     .step { s with producer := nextProducer cfg v } (some (.complete v s.results.toList))
   | .done => .blocked
 
-def State.setConsumer (s : State) (id : Nat) (ph : ConsumerPhase) : State :=
+def State.setConsumer (s : State τ κ) (id : Nat) (ph : ConsumerPhase κ) : State τ κ :=
   { s with consumers := s.consumers.setIfInBounds id ph }
 
-def consumerStep (cfg : Config) (s : State) (id : Nat) : Outcome :=
+def consumerStep (E : Engine τ κ) (cfg : Config) (s : State τ κ) (id : Nat) : Outcome τ κ :=
   let t := threadIndex (.consumer id)
   match s.consumers[id]? with
   | none => .fault s!"consumer {id} does not exist"
@@ -408,34 +468,19 @@ def consumerStep (cfg : Config) (s : State) (id : Nat) : Outcome :=
         .accessing s t (.writeResult id) fun s =>
           .step (s.setConsumer id (.inFunc v)) none
     | .inFunc v =>
-      .step { s.setConsumer id (.walk v (Walk.start cfg id)) with
+      .step { s.setConsumer id (.walk v (E.start cfg id)) with
                 results := s.results.setIfInBounds id (some v) }
             (some (.func id v s.job))
-    | .walk v w =>
-      match s.tickets[w.ticketId]? with
-      | none => .fault s!"consumer {id}: ticket {w.ticketId} is out of bounds"
-      | some old =>
-        if w.winId * w.winSize > cfg.workers then
-          .fault s!"consumer {id}: WORKERS - win_id * win_size underflows"
-        else
-          let targetVal := min w.winSize (cfg.workers - w.winId * w.winSize)
-          let newVal := old + w.mergeAmount
-          let tickets := s.tickets.setIfInBounds w.ticketId newVal
-          let s := s.rmwTicket t w.ticketId cfg.orderings.ticket
-          let ev := some (.ticket id v w.ticketId w.mergeAmount old)
-          if newVal = cfg.workers * (v + 1) then
-            -- every worker has completed this version
-            .step { s.setConsumer id (.finish v) with tickets } ev
-          else if w.ticketId = 0 || newVal != targetVal * (v + 1) then
-            -- root reached or window not full: stop walking
-            .step { s.setConsumer id (nextConsumer cfg v) with tickets } ev
-          else
-            let w' : Walk :=
-              { ticketId := parent w.ticketId cfg.cluster
-                winId := w.winId / cfg.cluster
-                winSize := w.winSize * cfg.cluster
-                mergeAmount := targetVal }
-            .step { s.setConsumer id (.walk v w') with tickets } ev
+    | .walk v cursor =>
+      match E.step cfg s.tickets cursor v s.clocks[t]! cfg.orderings.ticket with
+      | .fault m => .fault s!"consumer {id}: {m}"
+      | .ok tickets vc rmw next =>
+        let s := { s with tickets, clocks := s.clocks.set! t vc }
+        let ph := match next with
+          | .finished => .finish v
+          | .stop => nextConsumer cfg v
+          | .continue cursor => .walk v cursor
+        .step (s.setConsumer id ph) (some (.ticket id v rmw.ticketId rmw.amount rmw.old))
     | .finish v =>
       .step { (s.rmwProbe t cfg.orderings.finish).setConsumer id (nextConsumer cfg v) with
                 probe := s.probe + 1 }
@@ -443,10 +488,10 @@ def consumerStep (cfg : Config) (s : State) (id : Nat) : Outcome :=
     | .done => .blocked
 
 /-- One action of thread `t`. Every step is a new epoch of the thread's clock. -/
-def step (cfg : Config) (s : State) (t : Thread) : Outcome :=
+def step (E : Engine τ κ) (cfg : Config) (s : State τ κ) (t : Thread) : Outcome τ κ :=
   let raw := match t with
     | .producer => producerStep cfg s
-    | .consumer id => consumerStep cfg s id
+    | .consumer id => consumerStep E cfg s id
   match raw with
   | .step s' ev => .step (s'.tick (threadIndex t)) ev
   | o => o
@@ -455,13 +500,13 @@ def threads (cfg : Config) : List Thread :=
   .producer :: (List.range cfg.workers).map .consumer
 
 /-- The threads that can take a step. -/
-def enabled (cfg : Config) (s : State) : List Thread :=
+def enabled (E : Engine τ κ) (cfg : Config) (s : State τ κ) : List Thread :=
   (threads cfg).filter fun t =>
-    match step cfg s t with
+    match step E cfg s t with
     | .blocked => false
     | _ => true
 
-def State.isFinal (s : State) : Bool :=
+def State.isFinal [BEq κ] (s : State τ κ) : Bool :=
   s.producer == .done && s.consumers.all (· == .done)
 
 /-! ## Printing -/
@@ -505,23 +550,22 @@ def ProducerPhase.toString : ProducerPhase → String
 
 instance : ToString ProducerPhase := ⟨ProducerPhase.toString⟩
 
-def ConsumerPhase.toString : ConsumerPhase → String
+def ConsumerPhase.toString [ToString κ] : ConsumerPhase κ → String
   | .start => "start"
   | .initializing => "initializing"
   | .waitReady v => s!"waitReady {v}"
   | .beforeFunc v => s!"beforeFunc {v}"
   | .inFunc v => s!"inFunc {v}"
-  | .walk v w =>
-    s!"walk {v} (ticket {w.ticketId}, win {w.winId}, winSize {w.winSize}, merge {w.mergeAmount})"
+  | .walk v c => s!"walk {v} ({c})"
   | .finish v => s!"finish {v}"
   | .done => "done"
 
-instance : ToString ConsumerPhase := ⟨ConsumerPhase.toString⟩
+instance [ToString κ] : ToString (ConsumerPhase κ) := ⟨ConsumerPhase.toString⟩
 
-def State.describe (s : State) : String :=
+def State.describe [ToString κ] (E : Engine τ κ) (s : State τ κ) : String :=
   let consumers := s.consumers.toList.zipIdx.map fun (ph, i) =>
     s!"  c {i}: {ph}, clock {s.clocks[i + 1]!}\n"
-  s!"probe = {s.probe}, tickets = {s.tickets}, job = {optNat s.job}, results = {s.results.toList.map optNat}\n" ++
+  s!"probe = {s.probe}, {E.summary s.tickets}, job = {optNat s.job}, results = {s.results.toList.map optNat}\n" ++
   s!"  p: {s.producer}, clock {s.clocks[0]!}\n" ++ String.join consumers
 
 end RearmBarrier
