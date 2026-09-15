@@ -17,3 +17,7 @@ trace = []
 [[example]]
 name = "trace"
 required-features = ["trace"]
+
+[[bench]]
+name = "barrier"
+harness = false
