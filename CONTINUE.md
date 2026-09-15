@@ -1,9 +1,9 @@
 # Continuing the rearm-barrier verification
 
-State of the work as of 2026-09-15, after commit `32d5ca4` (the global
-invariant) plus the uncommitted `TreeCheck.lean` / `SpecProofs.lean` work (see
-"What changed in the last session"). Everything below the "Plan" heading is
-what remains; everything above it is context a new session needs before
+State of the work as of 2026-09-15, after commit `a6cf429` (the executable
+checks proved) plus the uncommitted `WalkInv.lean` / `Refinement.lean` work
+(see "What changed in the last session"). Everything below the "Plan" heading
+is what remains; everything above it is context a new session needs before
 touching the Lean.
 
 ## What exists
@@ -42,6 +42,8 @@ Proved (all `sorry`-free, axioms only `propext`, `Quot.sound`, `Classical.choice
 | `Completion.lean` | one-version abstract protocol ("game" = nondeterministic `Step` relation on a nested `Node` type): `Step.inv`, `done_contributed`, `done_clock` (hb: done node's clock dominates every consumer's), `noStep_of_done`, `progress`, `Step.measure_lt`, `run_completes` |
 
 | `TreeCheck.lean` | the executable check follows from the invariant: `mem_inFlightTo`, `inFlight_eq` (`inFlightTo` sums to `carriedTo`), `nodeViolations_nil` (each check ↔ a `NodeInv` clause), `Tree.invariant_nil`, `InvAt.leafDone_le`, `Inv.version_le_count` (no node beyond `count`; needs `descend` + `version_le_below`), `Inv.invariant_nil` |
+| `WalkInv.lean` | `WalkInv cfg V phase t`: a walker above its leaf carries exactly the child it came through (the next digit of its leaf path), which counts `V+1` (`carries`), and two walkers at one node came through different children (`distinct`); `walkInv_walk` (the only interesting step: filling a node and continuing), `WInv cfg s`, `step_wInv`, `reachable_wInv` |
+| `Refinement.lean` | the model refines `Completion`: `absNode cfg V phase p t : Completion.Node` (node at `V+1` ↦ filled, at `V` ↦ its counter, dead ↦ 0; a crate leaf's children are its consumers via `consumerDone`; `pendingAt` = filled ∧ (covers every worker ∨ `carriedFrom`, some walker still carries it); all clocks `zeroClock`), `absState`; `absNode_size`, `absChildren_getElem?/set/length`, `Agree` + `absNode_congr` (what the abstraction looks at), `Steps.inner_lift`; `carriedFrom_iff`, `carriedFrom_walk`/`pendingAt_walk`/`consumerDone_walk`/`agree_walk` (what one walk changes); `core_leaf` (leaf `fetch_add` = `inner (finish)` then `apply` of the consumer), `core_inner` (`apply` of the child the walker came through), `sim` (path-indexed), `refine_walk`; `agree_of_update` (every other consumer move leaves the abstract tree alone), `fresh_of`/`init_fresh` (start of a version is `Fresh`), `refine_step` (every step is `Steps` or a reset to `Fresh`), `reachable_absInv` (`Completion.Inv` of the abstract tree in every reachable state) |
 | `SpecProofs.lean` | `JobOk` (job slot per producer phase), `ResultOk` (result slot per consumer phase), `DataInv` (job + result slots), `init_dataInv`, `step_dataInv` (given `Inv`), `reachable_dataInv`, `violations_nil` / `reachable_violations_nil` (every clause of `Spec.violations`), `isFinal_producer`, `reachable_finalViolations_nil` |
 
 No hypotheses are taken as given any more: `reachable_inv` needs only
@@ -49,53 +51,53 @@ No hypotheses are taken as given any more: `reachable_inv` needs only
 
 ## What changed in the last session (uncommitted)
 
-- `Tree.invariant` and `Spec.violations` were rewritten without `partial`,
-  `Id.run do` or `for` loops (same checks, same messages, same order), as
-  `filterMap`/`if`/`sum` over lists, with the tree recursion as a `mutual`
-  structural recursion (`Tree.invariant` / `Tree.invariantChildren`).
-  `inFlightTo` now iterates `List.range cs.size` with `cs[id]!`.
-  `scripts/difftest.sh` still passes (see below), so the executable
-  behaviour is unchanged.
-- `StepInvariant.lean`: `access_unchanged` & co. now also report `job` and
-  `results`; `step_producer_move` reports `s'.job = jobAfter s.job p` and
-  `s'.results = s.results`; `step_consumer_move` reports `s'.job = s.job` and
-  `s'.results = resultsAfter s.results id ph`.
-- New `TreeCheck.lean` and `SpecProofs.lean` (table above); `RearmBarrier.lean`
-  imports them. `#print axioms` on `reachable_violations_nil`,
-  `reachable_finalViolations_nil`, `Inv.invariant_nil` gives only `propext`,
-  `Quot.sound`, `Classical.choice`.
-- Design notes: `InvAt` carries the version `V` as an explicit parameter
-  (with field `version : p.version cfg = V`) so that after `cases` on a
-  `ProducerMove` every field mentions a plain `v` and `omega` works; convert
-  with `have hinv : InvAt cfg s.probe s.tree (.publish v) v s.consumers := hinv`
-  (defeq) or `hinv.at hp` when only `hp : s.producer = p` is known (`rw … at`
-  cannot see through the `Inv` abbrev). When calling `InvAt.simple_move`,
-  pass `(ph' := …)` explicitly, otherwise a `nofun` argument elaborated
-  before `htree` unifies `ph'` with `.finish V`; prefer
-  `absurd h (not_finished_of_ne nofun nofun)` for the same reason.
-  `rw [getElem!_phaseOf …]` fails on "motive is not type correct" under a
-  `decide`; use `simp only [getElem!_phaseOf …]`. `by decide` refuses goals
-  with free variables even when they reduce; `cases h`/`nomatch h` on a
-  `(… == …) = true` hypothesis works.
+- New `WalkInv.lean` and `Refinement.lean` (table above); `RearmBarrier.lean`
+  imports them; `Inv.at` moved from `SpecProofs` to `Protocol`. `lake build`
+  is clean; `#print axioms reachable_absInv` gives only `propext`,
+  `Quot.sound`, `Classical.choice`. No executable Lean changed.
+- What the refinement does *not* do: clocks. Every abstract clock is
+  `zeroClock`, so `Completion.done_clock` transfers nothing yet. The reason:
+  the consumer's clock at its leaf `fetch_add` is not recoverable from the
+  concrete state (its clock keeps ticking, the leaf's `rel` only bounds it).
+  Design sketched for the hb session: make the refinement *relational* on
+  clocks — abstract consumer clock = the epoch clock of its result write
+  (`resultSlots[id].lastWrite`, which is in the state), abstract node clock
+  ≤ the concrete `rel` — and generalise `Completion.Step.apply` to any clock
+  ≥ `c.join ch.clock`; then `done_clock` gives "every result write's epoch ≤
+  the completing node's `rel`", which with one Release/Acquire hop on the
+  probe is the race-freedom of `complete`.
+- Proof-engineering notes for `Refinement.lean`: the abstraction is a
+  `mutual` structural recursion (`absNode`/`absKids`/`absChildren`); reason
+  about it with `absNode_mk` + `cases n`, never by induction on `Tree`;
+  strong induction on `sizeOf` with `sizeOf_child_lt (n := Tree.mk …)`. The
+  simulation is proved path-indexed (`sim`: induction on the suffix of the
+  cursor path, generalising the prefix) with `Steps.inner_lift` and
+  `absChildren_set`; the untouched parts are handled by `absNode_congr` with
+  an `Agree` witness built from three pointwise "what a walk changes" lemmas
+  and path arithmetic (`far_below`, `sibling_cond`, `sibling_cond'`).
+  `subst h` with `h : a = b` (both variables) eliminates `b`; when the
+  survivor matters use `obtain rfl : a = b := h.symm`. `rw [← hpr]` where
+  `hpr : p ++ [k] ++ r = c.path` works, but a following `rw [← List.append_cons]`
+  rewrites only the first digit it unifies with — state helper lemmas in the
+  shape the goal will have.
 
 ## Plan: what is left
 
-Both executable checks are now proved to pass in every reachable state
-(`reachable_violations_nil`, `reachable_finalViolations_nil`), so the
-explorer and the replay can only ever report faults of `Tree.walk` (index
-out of range) or data races, never an invariant violation. Remaining items:
-
-1. The refinement `Tree.walk` ↦ `Completion.Step` and the multi-version
-   version of `Completion`.
-2. The happens-before conclusion: track `probeRel` and the consumers'/producer's
-   clocks in an invariant (one Release on `finish`, one Acquire fence on
-   `observeDone`) to conclude that every consumer's `func` for `v` happens
-   before `complete` for `v`; `Completion.done_clock` is the tree half of that
-   argument. With it, `Outcome.race` would be unreachable too.
-3. `Tree.walk` never faults from a reachable state (the node under the cursor
-   exists, counts version `V`, does not overflow, and the root covers every
-   worker): the ingredients are in `TreeInv` (`walkers`, `carried_version`,
-   `not_full`, `leaves`) and `init_root_size`.
+1. The happens-before conclusion (see the design in "What changed"): a
+   relational clock refinement, or a direct concrete invariant on epochs
+   (`resultSlots[id].lastWrite` ≤ the `rel` of every node that has counted
+   `id`), then the probe hop (`finish` releases into `probeRel`, the
+   producer's `observeDone` acquires it) to show `Outcome.race` is
+   unreachable, i.e. `complete`'s writes and `func`'s accesses are ordered.
+2. `Tree.walk` never faults from a reachable state (the node under the
+   cursor exists, counts version `V`, does not overflow, and the root covers
+   every worker): the ingredients are in `TreeInv` (`walkers`,
+   `carried_version`, `not_full`, `leaves`), `WalkInv.carries` (the amount is
+   the child's size, so `finished + amount ≤ size` follows from
+   `live`/`filledBelow_le`) and `init_root_size`.
+3. Optional: transfer the game's other theorems through `reachable_absInv`
+   (e.g. `noStep_of_done`: once the node covering every worker is done no
+   walk step is possible — already known concretely via `others_done`).
 
 ## Lean pitfalls hit in this project (core only, no Mathlib)
 

@@ -155,10 +155,6 @@ theorem reachable_dataInv {cfg : Config} (hW : 1 ≤ cfg.workers) (hC : 2 ≤ cf
 
 /-! ## The checks -/
 
-/-- `Inv` at a known producer phase. -/
-theorem Inv.at {cfg : Config} {s : State} {p : ProducerPhase} (h : Inv cfg s) (hp : s.producer = p) :
-    InvAt cfg s.probe s.tree p (p.version cfg) s.consumers := by
-  subst hp; exact h
 
 /-- An entry of `zipIdx` over an array is an in-bounds element. -/
 theorem mem_toList_zipIdx {α : Type} {xs : Array α} {x : α} {i : Nat} (h : (x, i) ∈ xs.toList.zipIdx) :

@@ -71,6 +71,11 @@ structure InvAt (cfg : Config) (probe : Nat) (t : Tree) (p : ProducerPhase) (V :
 abbrev Inv (cfg : Config) (s : State) : Prop :=
   InvAt cfg s.probe s.tree s.producer (s.producer.version cfg) s.consumers
 
+/-- `Inv` at a known producer phase (`rw … at` cannot see through the abbreviation). -/
+theorem Inv.at {cfg : Config} {s : State} {p : ProducerPhase} (h : Inv cfg s) (hp : s.producer = p) :
+    InvAt cfg s.probe s.tree p (p.version cfg) s.consumers := by
+  subst hp; exact h
+
 /-! ## Consequences of the bookkeeping -/
 
 theorem probe_cases {cfg : Config} {p : ProducerPhase} {probe V : Nat} (hp : ProbeOk cfg p probe)
