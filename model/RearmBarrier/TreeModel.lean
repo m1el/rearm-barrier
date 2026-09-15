@@ -227,9 +227,11 @@ theorem pathOfIndex_heapIndex (C : Nat) (hC : 0 < C) (p : List Nat) (hp : ∀ k 
   have := pathOfIndex_heapIndex_rev C hC p.reverse (by simpa using hp)
   simpa using this
 
-/-- The path (most significant digit first) of the `j`-th node at depth `d`. -/
-def pathAt (C d j : Nat) : List Nat :=
-  (List.range d).foldl (fun (acc : List Nat × Nat) _ => (acc.2 % C :: acc.1, acc.2 / C)) ([], j) |>.1
+/-- The path (most significant digit first) of the `j`-th node at depth `d`:
+the base-`C` digits of `j`. -/
+def pathAt (C : Nat) : Nat → Nat → List Nat
+  | 0, _ => []
+  | d + 1, j => pathAt C d (j / C) ++ [j % C]
 
 /-! ## The flat state -/
 

@@ -137,6 +137,16 @@ inductive Access
   | writeAllResults
 deriving Repr
 
+/-- Write every result slot in turn (what `complete` does through its
+`&mut [CacheLine<R>; WORKERS]`), stopping at the first race. -/
+def writeAllSlots (t : Nat) (vc : VC) (race : Nat → String → String) :
+    List (Slot × Nat) → Array Slot → Except String (Array Slot)
+  | [], rs => pure rs
+  | (slot, i) :: l, rs =>
+    match slot.writeConflict vc with
+    | some c => throw (race i c)
+    | none => writeAllSlots t vc race l (rs.modify i (·.write t vc))
+
 /-- Perform a non-atomic access by thread `t`, or report the data race. -/
 def State.access (s : State) (t : Nat) (a : Access) : Except String State :=
   let vc := s.clocks[t]!
@@ -156,10 +166,10 @@ def State.access (s : State) (t : Nat) (a : Access) : Except String State :=
     | some c => throw (race s!"result slot {i}" "write" c)
     | none => pure { s with resultSlots := s.resultSlots.modify i (·.write t vc) }
   | .writeAllResults =>
-    s.resultSlots.toList.zipIdx.foldlM (init := s) fun s (slot, i) =>
-      match slot.writeConflict vc with
-      | some c => throw (race s!"result slot {i}" "write (inside complete)" c)
-      | none => pure { s with resultSlots := s.resultSlots.modify i (·.write t vc) }
+    match writeAllSlots t vc (fun i c => race s!"result slot {i}" "write (inside complete)" c)
+        s.resultSlots.toList.zipIdx s.resultSlots with
+    | .ok rs => pure { s with resultSlots := rs }
+    | .error m => throw m
 
 /-! ## Steps -/
 

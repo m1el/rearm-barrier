@@ -369,19 +369,22 @@ theorem divCeil_mul_ge (W C : Nat) (hC : 1 ≤ C) : W ≤ divCeil W C * C := by
   generalize C * ((W + C - 1) / C) = m at h1 ⊢
   omega
 
+/-- The root's window, `C ^ (H + 1)`, reaches every worker. -/
+theorem rootHeight_pow (cfg : Config) (hC : 2 ≤ cfg.cluster) :
+    cfg.workers ≤ cfg.cluster ^ (rootHeight cfg + 1) := by
+  have h1 := pow_levels_ge cfg.baseSize cfg.cluster hC
+  have h2 := divCeil_mul_ge cfg.workers cfg.cluster (by omega)
+  rw [Nat.pow_succ]
+  exact Nat.le_trans h2 (Nat.mul_le_mul_right _ h1)
+
 /-- The root of a valid configuration's tree covers exactly `[0, WORKERS)`. -/
 theorem init_root_window (cfg : Config) (hC : 2 ≤ cfg.cluster) :
     (Tree.init cfg).lo = 0 ∧ (Tree.init cfg).hi = cfg.workers := by
   unfold Tree.init
   refine ⟨build_lo _ _ _ _, ?_⟩
   rw [build_hi]
-  have h1 := pow_levels_ge cfg.baseSize cfg.cluster hC
-  have h2 := divCeil_mul_ge cfg.workers cfg.cluster (by omega)
-  have h3 : cfg.workers ≤ cfg.cluster ^ (rootHeight cfg + 1) := by
-    rw [Nat.pow_succ]
-    exact Nat.le_trans h2 (Nat.mul_le_mul_right _ h1)
   simp only [Nat.zero_add]
-  exact Nat.min_eq_right h3
+  exact Nat.min_eq_right (rootHeight_pow cfg hC)
 
 /-- Hence the root covers every worker, which is what `Tree.walk` relies on
 to never fault at the root. -/

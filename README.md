@@ -112,6 +112,18 @@ transition system and is differentially tested against the crate.
   which shows every live node has advanced). The hypotheses are exactly
   what the global protocol supplies: a walking consumer is at the
   producer's version and below `count`.
+* `RearmBarrier/TreeInit.lean` proves the invariant holds at the start
+  (`init_treeInv`), via a characterisation of every node of a built tree
+  by its path (`get_build_char`): `Cursor.start` names the leaf holding
+  each consumer (`init_leaves`) and no other leaf holds it
+  (`init_leaf_unique`).
+* `RearmBarrier/StepInvariant.lean` bridges the executable `State` to the
+  invariant: consumers as a function (`phaseOf`), `setConsumer` as a point
+  update, and the theorems that every consumer step of `step` preserves
+  `TreeInv` (`step_consumer_treeInv`) and every producer step leaves the
+  tree and consumers alone (`step_producer_treeInv`). The hypotheses are
+  the ones the global protocol invariant will supply: a consumer inside
+  `func`, walking or finishing is at the producer's version, below `count`.
 * `RearmBarrier/Completion.lean` is the proved part of the protocol. It isolates one
   version's completion as a "game" on the tree, meaning a nondeterministic
   transition system (a `Step` relation whose rules may fire anywhere, in
@@ -185,12 +197,11 @@ is proved for all shapes and all orderings; so are the path/index mapping
 and, for the executable tree, the update, the single-step behaviour of
 `walk` and its agreement with the crate's decision rule, and the window of
 the root. Not proved: the global protocol invariant relating the probe, the
-producer's phase and the consumers' versions, which is what turns the
-per-step results of `TreeInvariant.lean` into a theorem about `step` on
-`State` (the initial state's `leaves` / `leaf_unique` facts about
-`Cursor.start` are also still unproved), and the refinement from the
-executable tree to the game; these are checked by exploration and by
-replaying crate traces. The
+producer's phase and the consumers' versions, which supplies the
+version hypotheses of `step_consumer_treeInv` and says when
+`advance_preserves` applies, and the refinement from the executable tree
+to the game; these are checked by exploration and by replaying crate
+traces. The
 step from the completing `fetch_add` to the producer's `complete` (one
 Release on the probe, one Acquire fence) and the per-version re-arming are
 likewise only checked. Not covered at all: stale relaxed loads that change
