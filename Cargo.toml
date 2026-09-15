@@ -8,3 +8,12 @@ categories = ["concurrency", "no-std"]
 keywords = ["barrier", "spin", "broadcast", "benchmark"]
 
 [dependencies]
+
+[features]
+# Report every atomic operation to a hook, for differential testing against
+# the Lean model in `model/` (see `scripts/difftest.sh`).
+trace = []
+
+[[example]]
+name = "trace"
+required-features = ["trace"]

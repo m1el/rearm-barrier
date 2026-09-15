@@ -1,0 +1,10 @@
+name = "rearm-barrier-model"
+version = "0.1.0"
+defaultTargets = ["rearm-model"]
+
+[[lean_lib]]
+name = "RearmBarrier"
+
+[[lean_exe]]
+name = "rearm-model"
+root = "Main"

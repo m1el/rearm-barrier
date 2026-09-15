@@ -46,6 +46,11 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
 
+#[cfg(feature = "trace")]
+pub mod trace;
+#[cfg(not(feature = "trace"))]
+mod trace;
+
 /// A value which is forced to align to a cache line
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(C, align(64))]
@@ -282,15 +287,22 @@ impl<T, R, const WORKERS: usize, const CLUSTER: usize> RearmBarrier<T, R, WORKER
                 }
                 self.val_ptr().write(job);
             }
+            trace::record(trace::Event::JobWritten { version });
 
             // Mark task as ready
-            self.ticket_probe.fetch_add(1, Ordering::Release);
+            let old = self.ticket_probe.fetch_add(1, Ordering::Release);
+            trace::record(trace::Event::Publish { version, old });
 
             // Wait until every worker has completed this version
-            while self.ticket_probe.load(Ordering::Relaxed) != (version + 1) * 2 {
+            let value = loop {
+                let value = self.ticket_probe.load(Ordering::Relaxed);
+                if value == (version + 1) * 2 {
+                    break value;
+                }
                 core::hint::spin_loop();
-            }
+            };
             fence(Ordering::Acquire);
+            trace::record(trace::Event::ObserveDone { version, value });
 
             // SAFETY: all consumers have finished this version, so all
             // `WORKERS` states are initialized and no consumer touches them
@@ -334,15 +346,21 @@ impl<T, R, const WORKERS: usize, const CLUSTER: usize> RearmBarrier<T, R, WORKER
         unsafe {
             self.state_ptr(consumer_id).write(state);
         }
+        trace::record(trace::Event::StateInit { id: consumer_id });
 
         let tickets = self.tickets();
 
         for version in 0..count {
             // Wait until task is ready
-            while self.ticket_probe.load(Ordering::Relaxed) <= version * 2 {
+            let value = loop {
+                let value = self.ticket_probe.load(Ordering::Relaxed);
+                if value > version * 2 {
+                    break value;
+                }
                 core::hint::spin_loop();
-            }
+            };
             fence(Ordering::Acquire);
+            trace::record(trace::Event::ObserveReady { id: consumer_id, version, value });
 
             // SAFETY: the producer has published this version and will not
             // touch the job until we (and everyone else) increment the
@@ -360,12 +378,20 @@ impl<T, R, const WORKERS: usize, const CLUSTER: usize> RearmBarrier<T, R, WORKER
                 // number of workers
                 let target_val = win_size.min(WORKERS - win_id * win_size);
 
-                let new_val =
-                    tickets[ticket_id].fetch_add(merge_amount, Ordering::AcqRel) + merge_amount;
+                let old = tickets[ticket_id].fetch_add(merge_amount, Ordering::AcqRel);
+                let new_val = old + merge_amount;
+                trace::record(trace::Event::Ticket {
+                    id: consumer_id,
+                    version,
+                    ticket: ticket_id,
+                    amount: merge_amount,
+                    old,
+                });
 
                 // Every worker has completed this version
                 if new_val == WORKERS * (version + 1) {
-                    self.ticket_probe.fetch_add(1, Ordering::Release);
+                    let old = self.ticket_probe.fetch_add(1, Ordering::Release);
+                    trace::record(trace::Event::Finish { id: consumer_id, version, old });
                     break;
                 }
 
