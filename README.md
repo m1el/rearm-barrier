@@ -65,23 +65,21 @@ transition system and is differentially tested against the crate.
   publishing, AcqRel on the tickets, Release on finishing, and the Acquire
   fences after the spin loops. Every non-atomic access must happen after
   each conflicting earlier one, otherwise the step is a data race.
-* The completion tickets are abstracted as a *ticket engine*, and there
-  are two: `RearmBarrier/Flat.lean` mirrors the crate's heap-indexed array
-  and its `win_id` / `win_size` arithmetic literally, and
-  `RearmBarrier/TreeModel.lean` is a structural tree whose nodes own a
-  window of consumers and count `(version, finished)`, with the crate's
-  counter being `size * version + finished` and its `WORKERS * (version +
-  1)` test being "the node covering every worker fills". The tree engine
-  also checks the counting invariant in every state: a leaf's `finished`
-  is the number of its consumers past their `fetch_add`, a live inner
-  node's `finished` plus the contributions in flight towards it is the
-  size of its children one version ahead, and the ancestors of the node
-  covering every worker are never touched. `RearmBarrier/Product.lean`
-  runs both engines in lockstep and faults if they disagree on a ticket,
-  an amount, an old value, a clock or the consumer's next move, so
-  exploring with it (the default) is a bisimulation check of the two
-  representations; `heapIndex_append` and `parent_heapIndex` prove that
-  the tree's paths map onto the crate's heap layout.
+* `RearmBarrier/TreeModel.lean` is the completion tree. Where the crate
+  keeps a flat heap-indexed array, the model keeps an inductive tree whose
+  nodes own a window of consumers and count `(version, finished)`; the
+  crate's counter is `size * version + finished` and its `WORKERS *
+  (version + 1)` test is "the node covering every worker fills". The
+  mapping to the crate's flat state goes both ways: `heapIndex` and
+  `pathOfIndex` translate between paths and heap indices (proved inverse
+  by `heapIndex_pathOfIndex` and `pathOfIndex_heapIndex`), and
+  `toCounters` / `ofCounters` translate between the tree and the counter
+  array, which is how traces from the crate, which name tickets by heap
+  index, are replayed. The file also checks the counting invariant in
+  every state: a leaf's `finished` is the number of its consumers past
+  their `fetch_add`, a live inner node's `finished` plus the contributions
+  in flight towards it is the size of its children one version ahead, and
+  the ancestors of the node covering every worker are never touched.
 * `RearmBarrier/Completion.lean` is the proved part. It isolates one
   version's completion as a "game" on the tree, meaning a nondeterministic
   transition system (a `Step` relation whose rules may fire anywhere, in
@@ -110,7 +108,6 @@ transition system and is differentially tested against the crate.
 ```
 cd model && lake build
 .lake/build/bin/rearm-model explore 5 2 2        # every interleaving of 5 workers, fan-in 2, 2 versions
-.lake/build/bin/rearm-model tree explore 5 2 2   # ... on the tree engine alone (also: flat, both)
 .lake/build/bin/rearm-model explore 3 2 2 consumer-fence   # ... with the consumer's Acquire fence removed
 .lake/build/bin/rearm-model check trace.txt      # is this crate trace an execution of the model?
 .lake/build/bin/rearm-model simulate 7 3 4 42    # a random execution of the model, in trace syntax
@@ -152,9 +149,10 @@ both Miri and `rearm-model explore` as a race between the producer's job
 write and the consumer's read inside `func`.
 
 What is proved versus checked: the completion game in `Completion.lean`
-is proved for all shapes and all orderings; that the tree engine is an
-instance of that game, and that the flat engine matches the tree engine,
-is checked by exploration and by replaying crate traces, not proved. The
+is proved for all shapes and all orderings, and so is the path/index
+mapping; that the executable tree in `TreeModel.lean` is an instance of
+the game is checked by exploration and by replaying crate traces, not
+proved. The
 step from the completing `fetch_add` to the producer's `complete` (one
 Release on the probe, one Acquire fence) and the per-version re-arming are
 likewise only checked. Not covered at all: stale relaxed loads that change

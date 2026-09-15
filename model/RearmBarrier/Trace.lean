@@ -28,8 +28,6 @@ consistent interleaving:
 
 namespace RearmBarrier
 
-variable {τ κ : Type} [Inhabited τ] [Inhabited κ] [BEq κ] [ToString κ]
-
 structure Trace where
   cfg : Config
   events : List Event
@@ -91,10 +89,10 @@ def parseTrace (text : String) : Except String Trace := do
 
 /-! ## Replay -/
 
-structure Replay (τ κ : Type) where
+structure Replay where
   cfg : Config
   timedOut : Bool
-  state : State τ κ
+  state : State
   /-- remaining events per thread, indexed by `threadIndex` -/
   queues : Array (List Event)
   /-- the interleaving chosen so far -/
@@ -113,7 +111,7 @@ private def sameOp : Event → Event → Bool
   | _, _ => false
 
 /-- Whether the spin loop the thread is in would exit after loading `value`. -/
-private def spinAccepts (s : State τ κ) (t : Thread) : Option (Nat → Bool) :=
+private def spinAccepts (s : State) (t : Thread) : Option (Nat → Bool) :=
   match t with
   | .producer =>
     match s.producer with
@@ -129,30 +127,30 @@ private def observedValue : Event → Option Nat
   | .observeReady _ _ value => some value
   | _ => none
 
-inductive Attempt (τ κ : Type)
+inductive Attempt
   /-- the thread has no events left, or its next event is not possible yet -/
-  | notNow (r : Replay τ κ)
+  | notNow (r : Replay)
   /-- one trace event was consumed -/
-  | consumed (r : Replay τ κ)
+  | consumed (r : Replay)
   | mismatch (msg : String)
 deriving Inhabited
 
-private def describeState (E : Engine τ κ) (r : Replay τ κ) : String :=
-  s!"after {r.replayed} events, model state:\n{r.state.describe E}"
+private def describeState (r : Replay) : String :=
+  s!"after {r.replayed} events, model state:\n{r.state.describe r.cfg}"
 
-private def commit (r : Replay τ κ) (t : Thread) (s : State τ κ) (ev : Option Event) : Replay τ κ :=
+private def commit (r : Replay) (t : Thread) (s : State) (ev : Option Event) : Replay :=
   { r with state := s, history := r.history.push (t, ev) }
 
 /-- Run the silent steps of `t` and then try to match its next trace event. -/
-private partial def tryThread (E : Engine τ κ) (r : Replay τ κ) (t : Thread) : Attempt τ κ :=
+private partial def tryThread (r : Replay) (t : Thread) : Attempt :=
   let idx := threadIndex t
   match r.queues[idx]? with
   | none | some [] => .notNow r
   | some (target :: rest) =>
-    match step E r.cfg r.state t with
-    | .fault m => .mismatch s!"model fault on thread `{t}`: {m}\n{describeState E r}"
-    | .race m => .mismatch s!"thread `{t}`: {m}\n{describeState E r}"
-    | .step s none => tryThread E (commit r t s none) t
+    match step r.cfg r.state t with
+    | .fault m => .mismatch s!"model fault on thread `{t}`: {m}\n{describeState r}"
+    | .race m => .mismatch s!"thread `{t}`: {m}\n{describeState r}"
+    | .step s none => tryThread (commit r t s none) t
     | .step s (some ev) =>
       if ev == target then
         .consumed { commit r t s (some ev) with
@@ -160,37 +158,37 @@ private partial def tryThread (E : Engine τ κ) (r : Replay τ κ) (t : Thread)
       else if sameOp ev target then
         .notNow r
       else
-        .mismatch s!"thread `{t}`: the trace says `{target}` but the model does `{ev}`\n{describeState E r}"
+        .mismatch s!"thread `{t}`: the trace says `{target}` but the model does `{ev}`\n{describeState r}"
     | .blocked =>
       match observedValue target, spinAccepts r.state t with
       | some value, some accepts =>
         if !accepts value then
-          .mismatch s!"thread `{t}`: the trace leaves a spin loop after observing `{target}`, which the model would keep spinning on\n{describeState E r}"
+          .mismatch s!"thread `{t}`: the trace leaves a spin loop after observing `{target}`, which the model would keep spinning on\n{describeState r}"
         else
           -- the counter has not reached `value` yet (or has passed it)
           .notNow r
       | _, _ =>
-        .mismatch s!"thread `{t}`: the trace continues with `{target}` but the model thread is blocked\n{describeState E r}"
+        .mismatch s!"thread `{t}`: the trace continues with `{target}` but the model thread is blocked\n{describeState r}"
 
 /-- Try every thread once; non-mutating events first. -/
-private def sweep (E : Engine τ κ) (r : Replay τ κ) : Attempt τ κ := Id.run do
+private def sweep (r : Replay) : Attempt := Id.run do
   let ts := threads r.cfg
   let order := ts.filter (fun t => nextMutates r t == some false) ++
                ts.filter (fun t => nextMutates r t != some false)
   let mut cur := r
   for t in order do
-    match tryThread E cur t with
+    match tryThread cur t with
     | .consumed r' => return .consumed r'
     | .notNow r' => cur := r'
     | .mismatch m => return .mismatch m
   return .notNow cur
 where
-  nextMutates (r : Replay τ κ) (t : Thread) : Option Bool :=
+  nextMutates (r : Replay) (t : Thread) : Option Bool :=
     match r.queues[threadIndex t]? with
     | some (e :: _) => some e.mutates
     | _ => none
 
-private def stuckReport (E : Engine τ κ) (r : Replay τ κ) : String := Id.run do
+private def stuckReport (r : Replay) : String := Id.run do
   let mut msg := "no interleaving continues the trace:\n"
   if r.timedOut then
     msg := msg ++ "  (the trace is a timeout snapshot: an operation performed just before the snapshot may be missing)\n"
@@ -198,39 +196,39 @@ private def stuckReport (E : Engine τ κ) (r : Replay τ κ) : String := Id.run
     match r.queues[threadIndex t]? with
     | some (e :: _) => msg := msg ++ s!"  thread `{t}` wants `{e}`\n"
     | _ => msg := msg ++ s!"  thread `{t}` is finished\n"
-  return msg ++ describeState E r
+  return msg ++ describeState r
 
-structure ReplayResult (τ κ : Type) where
+structure ReplayResult where
   replayed : Nat
   history : Array (Thread × Option Event)
-  final : State τ κ
+  final : State
 
-private partial def run (E : Engine τ κ) (r : Replay τ κ) : Except String (ReplayResult τ κ) :=
-  if let msg :: _ := violations E r.cfg r.state then
-    throw s!"invariant violated: {msg}\n{describeState E r}"
+private partial def run (r : Replay) : Except String ReplayResult :=
+  if let msg :: _ := violations r.cfg r.state then
+    throw s!"invariant violated: {msg}\n{describeState r}"
   else if r.queues.all (·.isEmpty) then
     if r.timedOut then
       -- every recorded event is an action of the model; is what follows a deadlock?
-      match enabled E r.cfg r.state with
+      match enabled r.cfg r.state with
       | [] =>
         if r.state.isFinal then
-          throw s!"the trace is marked `timeout` but every thread has finished in the model\n{describeState E r}"
+          throw s!"the trace is marked `timeout` but every thread has finished in the model\n{describeState r}"
         else
-          throw s!"the crate hung, and the model confirms the deadlock: no thread is enabled\n{describeState E r}"
+          throw s!"the crate hung, and the model confirms the deadlock: no thread is enabled\n{describeState r}"
       | ts =>
-        throw s!"the crate hung, but the model can still make progress with {ts}: either the timeout was too short or the crate lost a wakeup\n{describeState E r}"
+        throw s!"the crate hung, but the model can still make progress with {ts}: either the timeout was too short or the crate lost a wakeup\n{describeState r}"
     else
-      match finalViolations E r.cfg r.state with
-      | msg :: _ => throw s!"at the end of the trace: {msg}\n{describeState E r}"
+      match finalViolations r.cfg r.state with
+      | msg :: _ => throw s!"at the end of the trace: {msg}\n{describeState r}"
       | [] => pure { replayed := r.replayed, history := r.history, final := r.state }
   else
-    match sweep E r with
-    | .consumed r' => run E r'
-    | .notNow r' => throw (stuckReport E r')
+    match sweep r with
+    | .consumed r' => run r'
+    | .notNow r' => throw (stuckReport r')
     | .mismatch m => throw m
 
 /-- Check that a trace is an execution of the model satisfying every invariant. -/
-def replay (E : Engine τ κ) (tr : Trace) : Except String (ReplayResult τ κ) := do
+def replay (tr : Trace) : Except String ReplayResult := do
   if !tr.cfg.valid then
     throw s!"invalid configuration: WORKERS = {tr.cfg.workers}, CLUSTER = {tr.cfg.cluster}"
   let n := tr.cfg.workers + 1
@@ -241,7 +239,7 @@ def replay (E : Engine τ κ) (tr : Trace) : Except String (ReplayResult τ κ) 
   for e in tr.events do
     if threadIndex e.thread ≥ n then
       throw s!"event `{e}` belongs to a consumer outside 0..{tr.cfg.workers}"
-  run E { cfg := tr.cfg, timedOut := tr.timedOut, state := State.init E tr.cfg, queues,
+  run { cfg := tr.cfg, timedOut := tr.timedOut, state := State.init tr.cfg, queues,
           history := #[], replayed := 0 }
 
 /-! ## Random simulation
@@ -256,30 +254,30 @@ private def xorshift (x : UInt64) : UInt64 :=
 
 /-- Run the model under a pseudo-random schedule. Returns the trace lines and
 the final state, or the first problem found. -/
-partial def simulate (E : Engine τ κ) (cfg : Config) (seed : UInt64) :
-    Except String (List String × State τ κ) :=
-  go (State.init E cfg) (if seed == 0 then 0x9E3779B97F4A7C15 else seed) [] 0
+partial def simulate (cfg : Config) (seed : UInt64) :
+    Except String (List String × State) :=
+  go (State.init cfg) (if seed == 0 then 0x9E3779B97F4A7C15 else seed) [] 0
 where
-  go (s : State τ κ) (rng : UInt64) (acc : List String) (steps : Nat) :
-      Except String (List String × State τ κ) := do
-    if let msg :: _ := violations E cfg s then
-      throw s!"invariant violated: {msg}\n{s.describe E}"
-    match enabled E cfg s with
+  go (s : State) (rng : UInt64) (acc : List String) (steps : Nat) :
+      Except String (List String × State) := do
+    if let msg :: _ := violations cfg s then
+      throw s!"invariant violated: {msg}\n{s.describe cfg}"
+    match enabled cfg s with
     | [] =>
-      match finalViolations E cfg s with
-      | msg :: _ => throw s!"{msg}\n{s.describe E}"
+      match finalViolations cfg s with
+      | msg :: _ => throw s!"{msg}\n{s.describe cfg}"
       | [] => pure (acc.reverse, s)
     | ts =>
       let rng := xorshift rng
       let t := ts[(rng.toNat % ts.length)]!
-      match step E cfg s t with
+      match step cfg s t with
       | .step s' ev =>
         let acc := match ev with
           | some e => s!"{t} {e}" :: acc
           | none => acc
         go s' rng acc (steps + 1)
-      | .fault m => throw s!"model fault on `{t}`: {m}\n{s.describe E}"
-      | .race m => throw s!"{m}\n{s.describe E}"
+      | .fault m => throw s!"model fault on `{t}`: {m}\n{s.describe cfg}"
+      | .race m => throw s!"{m}\n{s.describe cfg}"
       | .blocked => throw "enabled thread is blocked"
 
 end RearmBarrier

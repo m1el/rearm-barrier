@@ -1,8 +1,7 @@
 import RearmBarrier.Tree
-import RearmBarrier.Model
-import RearmBarrier.Flat
+import RearmBarrier.Basics
 import RearmBarrier.TreeModel
-import RearmBarrier.Product
+import RearmBarrier.Model
 import RearmBarrier.Spec
 import RearmBarrier.Explore
 import RearmBarrier.Trace

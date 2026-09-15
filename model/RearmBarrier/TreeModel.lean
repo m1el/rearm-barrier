@@ -1,14 +1,15 @@
-import RearmBarrier.Model
+import RearmBarrier.Basics
 
 /-!
-# The tree engine
+# The completion tree
 
-The completion tree as an inductive tree instead of a heap-indexed array.
-Every node owns a window `[lo, hi)` of consumer IDs; leaves own at most
-`CLUSTER` consecutive IDs, inner nodes have at most `CLUSTER` children whose
-windows partition the node's window. The number of consumers under a node,
-`hi - lo`, is what the crate computes as `win_size.min(WORKERS - win_id *
-win_size)`.
+The crate keeps its completion counters in a flat array laid out as a heap
+(`children of i are i * C + 1 ..= i * C + C`). The model keeps them as an
+inductive tree instead: every node owns a window `[lo, hi)` of consumer IDs,
+leaves own at most `CLUSTER` consecutive IDs, inner nodes have at most
+`CLUSTER` children whose windows partition the node's window. The number of
+consumers under a node, `hi - lo`, is what the crate computes as
+`win_size.min(WORKERS - win_id * win_size)`.
 
 ## Node state
 
@@ -26,10 +27,19 @@ A consumer's cursor is the path from the root to its current node, and the
 update is `modifyAt`, which by construction cannot change the shape of the
 tree: only the counters and release clock of one node change.
 
+## The two-way mapping to the crate's flat state
+
+Traces from the crate name tickets by heap index. `heapIndex` maps a path to
+its index and `pathOfIndex` maps back; `heapIndex_pathOfIndex` and
+`pathOfIndex_heapIndex` prove they are inverse. `toCounters` renders the
+tree as the crate's counter array and `ofCounters` reads one back, with
+`(version, finished) = (counter / size, counter % size)`.
+
 ## Invariant
 
 `invariant` is the counting invariant this representation is built to make
-statable, checked by the explorer in every reachable state:
+statable, checked by the explorer in every reachable state (and proved for
+a single version, abstractly, in `RearmBarrier.Completion`):
 
 * a node's version is the version of any consumer contributing to it;
 * a leaf's `finished` is the number of its consumers past their leaf
@@ -39,16 +49,9 @@ statable, checked by the explorer in every reachable state:
   it, is the total size of its children that are one version ahead, and no
   child is further ahead;
 * a dead node is never touched.
-
-## Layout
-
-The heap index of a node is recovered from its path (`heapIndex`), so the
-events this engine produces carry the same ticket IDs as the flat engine;
-`heapIndex_append` and `parent_heapIndex` show that this is exactly the
-crate's layout (`children of i are i * C + 1 ..= i * C + C`).
 -/
 
-namespace RearmBarrier.TreeModel
+namespace RearmBarrier
 
 /-- A node of the completion tree: the version it is counting, how many of
 its consumers have finished that version, its release clock, the window
@@ -115,8 +118,20 @@ def build (W C : Nat) : (h : Nat) → (lo : Nat) → Tree
       (List.range C).filterMap fun k =>
         if lo + k * w < W then some (build W C h (lo + k * w)) else none
 
-partial def summary : Tree → List (Nat × Nat)
-  | .mk v f _ _ _ cs => (v, f) :: cs.flatMap summary
+/-- Every node with its path, in pre-order. -/
+partial def nodes (t : Tree) (path : List Nat := []) : List (List Nat × Tree) :=
+  (path, t) :: (t.children.zipIdx.flatMap fun (c, k) => c.nodes (path ++ [k]))
+
+/-- Every node's `(version, finished)`, in pre-order. -/
+def summary (t : Tree) : List (Nat × Nat) :=
+  t.nodes.map fun (_, n) => (n.version, n.finished)
+
+/-- Rebuild every node's counters from its path. -/
+partial def mapWithPath (f : List Nat → Tree → Nat × Nat) (t : Tree) (path : List Nat := []) : Tree :=
+  match t with
+  | .mk _ _ r lo hi cs =>
+    let (v, n) := f path t
+    .mk v n r lo hi (cs.zipIdx.map fun (c, k) => c.mapWithPath f (path ++ [k]))
 
 end Tree
 
@@ -137,9 +152,21 @@ where
 /-- The height of the root: the leaves are at depth `levels`. -/
 def rootHeight (cfg : Config) : Nat := levels cfg.baseSize cfg.cluster
 
+/-! ## Paths and heap indices -/
+
 /-- The heap index of the node at `path`, in the crate's layout. -/
 def heapIndex (C : Nat) (path : List Nat) : Nat :=
   path.foldl (fun i k => C * i + k + 1) 0
+
+/-- The path of the node with heap index `i`: undo `heapIndex` one level at
+a time with `(i - 1) / C` and `(i - 1) % C`. -/
+def pathOfIndex (C : Nat) : Nat → List Nat
+  | 0 => []
+  | i + 1 => pathOfIndex C (i / C) ++ [i % C]
+termination_by i => i
+decreasing_by
+  have := Nat.div_le_self i C
+  omega
 
 theorem heapIndex_append (C : Nat) (p : List Nat) (k : Nat) :
     heapIndex C (p ++ [k]) = C * heapIndex C p + k + 1 := by
@@ -155,9 +182,57 @@ theorem parent_heapIndex (C : Nat) (hC : 0 < C) (p : List Nat) (k : Nat) (hk : k
   rw [this, Nat.add_mul_div_left _ _ hC, Nat.div_eq_of_lt hk]
   simp
 
+/-- Every heap index is the index of its path. -/
+theorem heapIndex_pathOfIndex (C : Nat) : ∀ i, heapIndex C (pathOfIndex C i) = i
+  | 0 => by simp [pathOfIndex, heapIndex]
+  | i + 1 => by
+    have ih := heapIndex_pathOfIndex C (i / C)
+    rw [pathOfIndex, heapIndex_append, ih]
+    have := Nat.div_add_mod i C
+    omega
+termination_by i => i
+decreasing_by
+  have := Nat.div_le_self i C
+  omega
+
+private theorem pathOfIndex_heapIndex_rev (C : Nat) (hC : 0 < C) :
+    ∀ (q : List Nat), (∀ k ∈ q, k < C) → pathOfIndex C (heapIndex C q.reverse) = q.reverse
+  | [], _ => by simp [heapIndex, pathOfIndex]
+  | k :: q, hq => by
+    have hk : k < C := hq k (by simp)
+    have hq' : ∀ j ∈ q, j < C := fun j hj => hq j (by simp [hj])
+    rw [List.reverse_cons, heapIndex_append, pathOfIndex]
+    have h1 : (C * heapIndex C q.reverse + k) / C = heapIndex C q.reverse := by
+      rw [Nat.mul_add_div hC, Nat.div_eq_of_lt hk, Nat.add_zero]
+    have h2 : (C * heapIndex C q.reverse + k) % C = k := by
+      rw [Nat.mul_add_mod, Nat.mod_eq_of_lt hk]
+    rw [h1, h2, pathOfIndex_heapIndex_rev C hC q hq']
+
+/-- Every path with digits below `C` is the path of its index. -/
+theorem pathOfIndex_heapIndex (C : Nat) (hC : 0 < C) (p : List Nat) (hp : ∀ k ∈ p, k < C) :
+    pathOfIndex C (heapIndex C p) = p := by
+  have := pathOfIndex_heapIndex_rev C hC p.reverse (by simpa using hp)
+  simpa using this
+
 /-- The path (most significant digit first) of the `j`-th node at depth `d`. -/
 def pathAt (C d j : Nat) : List Nat :=
   (List.range d).foldl (fun (acc : List Nat × Nat) _ => (acc.2 % C :: acc.1, acc.2 / C)) ([], j) |>.1
+
+/-! ## The flat state -/
+
+/-- The crate's counter array: every node's counter at its heap index, dead
+entries zero. -/
+def Tree.toCounters (cfg : Config) (t : Tree) : Array Nat :=
+  t.nodes.foldl (init := Array.replicate cfg.storage 0) fun a (path, n) =>
+    a.setIfInBounds (heapIndex cfg.cluster path) n.counter
+
+/-- The tree whose counters are the given crate array (clocks zero). -/
+def Tree.ofCounters (cfg : Config) (counts : Array Nat) : Tree :=
+  (Tree.build cfg.workers cfg.cluster (rootHeight cfg) 0).mapWithPath fun path n =>
+    let c := counts[heapIndex cfg.cluster path]!
+    if n.size = 0 then (0, 0) else (c / n.size, c % n.size)
+
+/-! ## Consumers -/
 
 /-- A consumer's cursor: the path to its current node and the amount it adds. -/
 structure Cursor where
@@ -167,17 +242,77 @@ deriving Repr, BEq, Hashable, DecidableEq, Inhabited
 
 instance : ToString Cursor := ⟨fun c => s!"path {c.path}, merge {c.mergeAmount}"⟩
 
-def init (cfg : Config) : Tree := Tree.build cfg.workers cfg.cluster (rootHeight cfg) 0
+/-- The program counter of a consumer thread. -/
+inductive ConsumerPhase
+  /-- has claimed its ID, has not yet written its initial state -/
+  | start
+  /-- writing the initial state into its result slot -/
+  | initializing
+  /-- spinning until `probe > 2 * v` -/
+  | waitReady (version : Nat)
+  /-- about to call `func` -/
+  | beforeFunc (version : Nat)
+  /-- inside `func` (holding `&T` and `&mut R`) -/
+  | inFunc (version : Nat)
+  /-- about to `fetch_add` the ticket under the cursor -/
+  | walk (version : Nat) (cursor : Cursor)
+  /-- about to `fetch_add` the probe: this consumer completed the version -/
+  | finish (version : Nat)
+  | done
+deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+
+def ConsumerPhase.toString : ConsumerPhase → String
+  | .start => "start"
+  | .initializing => "initializing"
+  | .waitReady v => s!"waitReady {v}"
+  | .beforeFunc v => s!"beforeFunc {v}"
+  | .inFunc v => s!"inFunc {v}"
+  | .walk v c => s!"walk {v} ({c})"
+  | .finish v => s!"finish {v}"
+  | .done => "done"
+
+instance : ToString ConsumerPhase := ⟨ConsumerPhase.toString⟩
+
+/-- The tree of a fresh barrier. -/
+def Tree.init (cfg : Config) : Tree := Tree.build cfg.workers cfg.cluster (rootHeight cfg) 0
 
 /-- Consumer `id` starts at its leaf, adding 1. -/
-def start (cfg : Config) (id : Nat) : Cursor :=
+def Cursor.start (cfg : Config) (id : Nat) : Cursor :=
   { path := pathAt cfg.cluster (rootHeight cfg) (id / cfg.cluster), mergeAmount := 1 }
+
+/-- What one `fetch_add` on a ticket looked like: the heap index of the
+ticket, the amount added and the value returned. -/
+structure Rmw where
+  ticketId : Nat
+  amount : Nat
+  old : Nat
+deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+
+instance : ToString Rmw := ⟨fun r => s!"ticket {r.ticketId} += {r.amount} (was {r.old})"⟩
+
+/-- What a consumer does after a `fetch_add` on a ticket. -/
+inductive Next
+  /-- `new_val == WORKERS * (version + 1)`: bump the probe -/
+  | finished
+  /-- the window is not full yet: this version is done here -/
+  | stop
+  /-- the window filled: continue at the parent -/
+  | continue (cursor : Cursor)
+deriving Repr, BEq, Hashable, Inhabited
+
+inductive WalkResult
+  /-- the tree after the `fetch_add`, the thread's clock after the acquire
+  part of the ordering, the operation performed, and what follows -/
+  | ok (tree : Tree) (vc : VC) (rmw : Rmw) (next : Next)
+  /-- the Rust code would panic (an index out of bounds) -/
+  | fault (msg : String)
+deriving Inhabited
 
 /-- One iteration of the walk: add to the node under the cursor; if that
 fills the node, either the whole barrier is complete (the node covers every
 worker) or the consumer carries the node's size to the parent. -/
-def step (cfg : Config) (t : Tree) (c : Cursor) (v : Nat) (vc : VC) (ord : MemOrd) :
-    EngineResult Tree Cursor :=
+def Tree.walk (cfg : Config) (t : Tree) (c : Cursor) (v : Nat) (vc : VC) (ord : MemOrd) :
+    WalkResult :=
   match t.get c.path with
   | none => .fault s!"no node at path {c.path}"
   | some node =>
@@ -186,7 +321,7 @@ def step (cfg : Config) (t : Tree) (c : Cursor) (v : Nat) (vc : VC) (ord : MemOr
     else
       let old := node.counter
       let finished := node.finished + c.mergeAmount
-      let (vc, rel) := rmwTicketClocks vc node.rel ord
+      let (vc, rel) := rmwClocks vc node.rel ord
       let rmw := { ticketId := heapIndex cfg.cluster c.path, amount := c.mergeAmount, old }
       if finished < node.size then
         let t := t.modifyAt (fun n => .mk n.version finished rel n.lo n.hi n.children) c.path
@@ -207,7 +342,7 @@ def step (cfg : Config) (t : Tree) (c : Cursor) (v : Nat) (vc : VC) (ord : MemOr
 
 /-- How many leaf `fetch_add`s consumer `id` has done, given its phase and
 the path of its leaf. -/
-def leafDone (leafPath : List Nat) (count : Nat) : ConsumerPhase Cursor → Nat
+def leafDone (leafPath : List Nat) (count : Nat) : ConsumerPhase → Nat
   | .start | .initializing => 0
   | .waitReady v | .beforeFunc v | .inFunc v => v
   | .walk v c => if c.path == leafPath then v else v + 1
@@ -215,13 +350,13 @@ def leafDone (leafPath : List Nat) (count : Nat) : ConsumerPhase Cursor → Nat
   | .done => count
 
 /-- The contributions currently carried towards the node at `path`. -/
-def inFlightTo (path : List Nat) (cs : Array (ConsumerPhase Cursor)) : List (Nat × Nat × Nat) :=
+def inFlightTo (path : List Nat) (cs : Array ConsumerPhase) : List (Nat × Nat × Nat) :=
   cs.toList.zipIdx.filterMap fun (ph, id) =>
     match ph with
     | .walk v c => if c.path == path then some (id, v, c.mergeAmount) else none
     | _ => none
 
-partial def invariant (cfg : Config) (cs : Array (ConsumerPhase Cursor)) (path : List Nat) (t : Tree) :
+partial def Tree.invariant (cfg : Config) (cs : Array ConsumerPhase) (path : List Nat) (t : Tree) :
     List String := Id.run do
   let mut out : List String := []
   let here := s!"node {path} (window [{t.lo}, {t.hi}), version {t.version}, finished {t.finished})"
@@ -261,13 +396,7 @@ partial def invariant (cfg : Config) (cs : Array (ConsumerPhase Cursor)) (path :
     if t.finished + inFlight != filled then
       out := out ++ [s!"{here} plus {inFlight} in flight does not match {filled} finished below it"]
   for (child, k) in t.children.zipIdx do
-    out := out ++ invariant cfg cs (path ++ [k]) child
+    out := out ++ child.invariant cfg cs (path ++ [k])
   return out
 
-def violations (cfg : Config) (t : Tree) (cs : Array (ConsumerPhase Cursor)) : List String :=
-  invariant cfg cs [] t
-
-def engine : Engine Tree Cursor :=
-  { init, start, step, violations, summary := fun t => s!"tree (version, finished) = {t.summary}" }
-
-end RearmBarrier.TreeModel
+end RearmBarrier
