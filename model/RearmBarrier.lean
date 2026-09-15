@@ -10,6 +10,7 @@ import RearmBarrier.TreeCheck
 import RearmBarrier.WalkInv
 import RearmBarrier.Refinement
 import RearmBarrier.Hb
+import RearmBarrier.NoFault
 import RearmBarrier.Model
 import RearmBarrier.Spec
 import RearmBarrier.SpecProofs

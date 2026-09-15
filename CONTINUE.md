@@ -1,7 +1,8 @@
 # Continuing the rearm-barrier verification
 
-State of the work as of 2026-09-15, after the commit that adds `Hb.lean`
-(race freedom proved; see "What changed in the last session"). Everything below the "Plan" heading
+State of the work as of 2026-09-15, after the commits that add `Hb.lean`
+(race freedom) and `NoFault.lean` (no faults); see "What changed in the
+last session". Everything below the "Plan" heading
 is what remains; everything above it is context a new session needs before
 touching the Lean.
 
@@ -44,6 +45,7 @@ Proved (all `sorry`-free, axioms only `propext`, `Quot.sound`, `Classical.choice
 | `WalkInv.lean` | `WalkInv cfg V phase t`: a walker above its leaf carries exactly the child it came through (the next digit of its leaf path), which counts `V+1` (`carries`), and two walkers at one node came through different children (`distinct`); `walkInv_walk` (the only interesting step: filling a node and continuing), `WInv cfg s`, `step_wInv`, `reachable_wInv` |
 | `Refinement.lean` | the model refines `Completion`: `absNode cfg V phase p t : Completion.Node` (node at `V+1` ↦ filled, at `V` ↦ its counter, dead ↦ 0; a crate leaf's children are its consumers via `consumerDone`; `pendingAt` = filled ∧ (covers every worker ∨ `carriedFrom`, some walker still carries it); all clocks `zeroClock`), `absState`; `absNode_size`, `absChildren_getElem?/set/length`, `Agree` + `absNode_congr` (what the abstraction looks at), `Steps.inner_lift`; `carriedFrom_iff`, `carriedFrom_walk`/`pendingAt_walk`/`consumerDone_walk`/`agree_walk` (what one walk changes); `core_leaf` (leaf `fetch_add` = `inner (finish)` then `apply` of the consumer), `core_inner` (`apply` of the child the walker came through), `sim` (path-indexed), `refine_walk`; `agree_of_update` (every other consumer move leaves the abstract tree alone), `fresh_of`/`init_fresh` (start of a version is `Fresh`), `refine_step` (every step is `Steps` or a reset to `Fresh`), `reachable_absInv` (`Completion.Inv` of the abstract tree in every reachable state) |
 | `Hb.lean` | race freedom: `Strong` (the crate's orderings: publish/finish release, ticket acquires+releases, both fences), `HbInv` (sizes of every clock; `State.mark j` = consumer `j`'s job-read epoch = its result-write epoch; `published`/`beforeFunc` for producer→consumer order; `resultMark`, `TreeHb` (`filled`/`leaf`/`counted`/`walker`: which release clocks and walker clocks know which result writes), `finisherKnows`, `probeKnows`, `producerKnows` for consumer→producer order), `init_hbInv`, `treeHb_walk` (the tree clauses across one `fetch_add`), `HbInv.walk`, `step_producer_hbInv`, `step_consumer_hbInv`, `reachable_hbInv`, `step_no_race`, **`reachable_no_race`**: with `Strong` orderings no reachable state has a step that is `Outcome.race` |
+| `NoFault.lean` | `Tree.get_of_prefix`, `walk_ok` (a walker's `Tree.walk` returns `.ok`: node exists, version matches, no overflow, root covers every worker), `step_tree_window`, `reachable_root_window`, `producer_no_fault`, `consumer_no_fault`, **`reachable_no_fault`**: no thread in `threads cfg` has a step that is `Outcome.fault` from a reachable state |
 | `SpecProofs.lean` | `JobOk` (job slot per producer phase), `ResultOk` (result slot per consumer phase), `DataInv` (job + result slots), `init_dataInv`, `step_dataInv` (given `Inv`), `reachable_dataInv`, `violations_nil` / `reachable_violations_nil` (every clause of `Spec.violations`), `isFinal_producer`, `reachable_finalViolations_nil` |
 
 No hypotheses are taken as given any more: `reachable_inv` needs only
@@ -69,18 +71,24 @@ No hypotheses are taken as given any more: `reachable_inv` needs only
   `setConsumer` is proved by applying the lemmas in the order that makes each
   intermediate state satisfy the invariant (e.g. `setConsumer` before
   `writeResult` for `start`), relying on defeq of the final records.
+- New `NoFault.lean`: `reachable_no_fault`. The root's window is not in any
+  invariant, so it is its own small induction (`reachable_root_window`).
+  `./scripts/difftest.sh` still ends "140 traces checked, 0 failures".
 
 ## Plan: what is left
 
-1. `Tree.walk` never faults from a reachable state (the node under the
-   cursor exists, counts version `V`, does not overflow, and the root covers
-   every worker): the ingredients are in `TreeInv` (`walkers`,
-   `carried_version`, `not_full`, `leaves`), `WalkInv.carries` (the amount is
-   the child's size, so `finished + amount ≤ size` follows from
-   `live`/`filledBelow_le`) and `init_root_size`.
-2. Optional: transfer the game's other theorems through `reachable_absInv`
-   (e.g. `noStep_of_done`: once the node covering every worker is done no
-   walk step is possible — already known concretely via `others_done`).
+The main safety results are all proved: `reachable_violations_nil`,
+`reachable_finalViolations_nil`, `reachable_no_race`, `reachable_no_fault`.
+What remains is optional:
+
+1. Deadlock freedom as a theorem: every reachable state with no enabled
+   thread is final (the explorer checks it). With `reachable_no_fault` and
+   `reachable_no_race`, "not blocked" means "has a step"; the argument is the
+   probe bookkeeping in `InvAt` plus `Completion.progress` via
+   `reachable_absInv` for the walkers.
+2. Transfer the game's other theorems through `reachable_absInv` (e.g.
+   `noStep_of_done`), or drop the zero-clock abstraction now that `Hb.lean`
+   proves the clock result directly.
 
 ## Lean pitfalls hit in this project (core only, no Mathlib)
 

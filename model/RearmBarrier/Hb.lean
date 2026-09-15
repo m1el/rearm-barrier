@@ -32,6 +32,8 @@ before the consumers' next `func` — is the producer's release on the probe
 (`published`) and the consumer's acquire fence (`beforeFunc`).
 -/
 
+set_option linter.deprecated false
+
 namespace RearmBarrier
 
 /-- The orderings the proof needs: those of `src/lib.rs`. -/
@@ -303,7 +305,7 @@ theorem Slot.writeConflict_none {sl : Slot} {vc : VC}
   intro x hx
   obtain ⟨r, i⟩ := x
   rw [List.mem_zipIdx_iff_getElem?] at hx
-  simp only [Array.getElem?_toList, Nat.add_zero] at hx
+  simp only [Array.getElem?_toList] at hx
   have := hr i
   rw [getElem!_of_getElem? hx] at this
   simp only [decide_eq_true_eq, Nat.not_lt]
@@ -629,16 +631,6 @@ theorem HbInv.rmwProbe {cfg : Config} {s : State} (hb : HbInv cfg s) {t : Nat} (
     · exact hb.acquireProbe ht
     · exact hb
 
-/-- A phase change of one consumer that touches nothing else. -/
-theorem HbInv.setConsumer_frame {cfg : Config} {s : State} (hb : HbInv cfg s) (id : Nat) (ph : ConsumerPhase) :
-    (s.setConsumer id ph).clocks = s.clocks ∧ (s.setConsumer id ph).probeRel = s.probeRel ∧
-      (s.setConsumer id ph).jobSlot = s.jobSlot ∧ (s.setConsumer id ph).resultSlots = s.resultSlots ∧
-      (s.setConsumer id ph).tree = s.tree ∧ (s.setConsumer id ph).producer = s.producer ∧
-      (s.setConsumer id ph).probe = s.probe ∧
-      (s.setConsumer id ph).consumers = s.consumers.setIfInBounds id ph :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
-
-
 theorem HbInv.setResults {cfg : Config} {s : State} (hb : HbInv cfg s) (r : Array (Option Nat)) :
     HbInv cfg { s with results := r } :=
   hb.frame (fun _ _ => Nat.le_refl _) rfl (fun _ _ => rfl) (fun _ => Nat.le_refl _) rfl rfl rfl rfl rfl rfl rfl
@@ -872,7 +864,7 @@ theorem not_past_no_filled {cfg : Config} {probe : Nat} {p : ProducerPhase} {V :
 theorem two_carry_le (W : Nat) (p : List Nat) (phase : Nat → ConsumerPhase) {i i' : Nat} (hne : i ≠ i')
     (hi : i < W) (hi' : i' < W) : carryOf p (phase i) + carryOf p (phase i') ≤ carriedTo W p phase := by
   unfold carriedTo
-  apply getElem?_two_le_sum _ i i' _ _ hne <;> simp [List.getElem?_map, List.getElem?_range, hi, hi']
+  apply getElem?_two_le_sum _ i i' _ _ hne <;> simp [hi, hi']
 
 /-- A node a walker is heading for is live. -/
 theorem not_dead_of_walker {cfg : Config} {V : Nat} {phase : Nat → ConsumerPhase} {t : Tree}
