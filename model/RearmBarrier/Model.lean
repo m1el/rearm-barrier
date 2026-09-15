@@ -19,12 +19,17 @@ modelled as steps: the thread is simply not enabled.
 
 ## Memory model
 
-The model interleaves the actions sequentially consistently. This is exact
-for the counters: every shared counter is modified only by `fetch_add`, so
-each location has a single modification order that every thread agrees on,
-and the counters only grow, so a stale relaxed load can only delay a thread,
-never let it through early. The write a successful spin-loop load reads from
-is therefore the latest one in the interleaving.
+The executable model interleaves RMWs and successful spin-loop exits,
+with each exit reading the current probe and performing its fence in the
+same step. This is a definition of this transition system, not a consequence
+of a generic data-race-freedom theorem.
+
+`WeakMemory.lean` proves a reduction from a history-based operational model:
+loads may read any recorded probe write, successful loads save that write's
+release clock, and fences execute separately. A waiting participant prevents
+the next probe update, so a successful read identifies the current signal,
+and its value and release clock remain stable until the fence. The reduction
+and its invariant are proved together by induction from initialization.
 
 On top of the interleaving the model tracks the C11 *happens-before* relation
 with vector clocks, the way Miri's data race detector and loom do:
@@ -42,10 +47,13 @@ with vector clocks, the way Miri's data race detector and loom do:
   per-thread read clock), otherwise the step is a data race.
 
 The orderings the crate uses are the defaults of `Orderings`; each can be
-weakened to explore what would go wrong. By the C11 data-race-freedom
-theorem, if every interleaving is race-free under this relation, the crate
-has no non-SC executions, which is what justifies interleaving in the first
-place.
+weakened to explore what would go wrong. Safety is proved for this model and
+for the history extension. Coverage of every Rust/C++ atomic execution still
+requires an external correspondence argument: per-location modification
+orders do not automatically give a global interleaving, and race freedom
+with relaxed/acquire/release operations does not imply SC. The new reduction
+does not assume or prove that missing correspondence. See `MEMORY_MODEL.md`
+for the synchronization rules, precise scope, and remaining proof obligations.
 -/
 
 namespace RearmBarrier

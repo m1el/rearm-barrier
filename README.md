@@ -58,11 +58,9 @@ transition system and is differentially tested against the crate.
   operation (or successful spin-loop exit) of `producer` and `consumer`,
   with the non-atomic accesses to the job and result slots split into
   begin/end steps so that overlapping accesses are visible as states.
-  The atomics are interleaved sequentially consistently, which is exact
-  for counters only ever modified by `fetch_add`; on top of that the model
-  tracks C11 happens-before with vector clocks (the scheme of Miri's data
-  race detector and loom), using the orderings of `src/lib.rs`: Release on
-  publishing, AcqRel on the tickets, Release on finishing, and the Acquire
+  The executable model interleaves atomic operations and tracks
+  happens-before with vector clocks, using the orderings of `src/lib.rs`:
+  Release on publishing, AcqRel on the tickets, Release on finishing, and Acquire
   fences after the spin loops. Every non-atomic access must happen after
   each conflicting earlier one, otherwise the step is a data race.
 * `RearmBarrier/TreeModel.lean` is the completion tree. Where the crate
@@ -144,6 +142,20 @@ transition system and is differentially tested against the crate.
   the job of its version, `complete` sees every result of its version, no
   conflicting accesses to the job or result slots overlap, the walk stays
   inside `ticket_storage`, and the counters never run ahead.
+* `RearmBarrier/WeakMemory.lean` extends the model with probe-write history,
+  arbitrary stale relaxed reads, and separate successful loads and fences.
+  It proves that every reachable extended state projects to an original
+  reachable state, and that every original execution can be lifted back.
+  Successful reads identify the actual publication or completion RMW; the
+  saved value and release clock remain stable until the fence. Race freedom
+  and no faults transfer to the extension. This is an operational reduction,
+  not a proof that all Rust/C++ execution graphs are covered; see
+  [Memory-model proof boundary](MEMORY_MODEL.md).
+* `RearmBarrier/ExecutionOrder.lean` proves that happens-before and one
+  coherent probe modification order admit a compatible finite ordering.
+  Ticket modification order is already happens-before under `AcqRel`.
+  The graph theorem assumes neither SC nor race freedom; connecting labeled
+  Rust events and their clocks to the operational model remains open.
 * `RearmBarrier/Explore.lean` enumerates every interleaving of a small
   configuration and checks the invariants plus deadlock freedom.
 * `RearmBarrier/Trace.lean` replays a trace recorded from the crate and
@@ -185,26 +197,24 @@ the checker reports whether the model agrees that they lead to a deadlock.
 
 Weakening any single ordering (`publish`, `ticket`, `finish`,
 `producer-fence`, `consumer-fence`) makes exploration report a data race
-with the two accesses involved. Traces cannot exhibit ordering bugs, since
-the hardware will not show them; the runtime oracle for orderings is
-`cargo miri test`, whose data race detector uses the same happens-before
-rules. Removing the consumer's Acquire fence, for example, is reported by
+with the two accesses involved. Passing trace replay does not establish
+correct memory ordering: a hardware run may not expose a missing ordering.
+`cargo miri test` also checks for data races using happens-before rules.
+Removing the consumer's Acquire fence, for example, is reported by
 both Miri and `rearm-model explore` as a race between the producer's job
 write and the consumer's read inside `func`.
 
-What is proved versus checked: the completion game in `Completion.lean`
-is proved for all shapes and all orderings; so are the path/index mapping
-and, for the executable tree, the update, the single-step behaviour of
-`walk` and its agreement with the crate's decision rule, and the window of
-the root. Not proved: the global protocol invariant relating the probe, the
-producer's phase and the consumers' versions, which supplies the
-version hypotheses of `step_consumer_treeInv` and says when
-`advance_preserves` applies, and the refinement from the executable tree
-to the game; these are checked by exploration and by replaying crate
-traces. The
-step from the completing `fetch_add` to the producer's `complete` (one
-Release on the probe, one Acquire fence) and the per-version re-arming are
-likewise only checked. Not covered at all: stale relaxed loads that change
-control flow (they cannot here, since every spin condition is monotone in
-a counter that only grows), and the `panic` paths for duplicate producers
-or consumers.
+What is proved versus checked: the executable model's global protocol,
+counting, data, and happens-before invariants are proved. Every reachable
+state passes the specification checks; with the crate's orderings, no next
+step races, and no valid thread's next step faults. The tree refines the
+abstract completion game. The history model additionally proves that stale
+probe reads and separating loads from fences preserve these safety results.
+Deadlock freedom is checked by exploration, not yet proved for the concrete
+model. Forward refinement alone does not transfer the game's progress theorem.
+
+These are model theorems. Full Rust coverage still requires the execution-graph
+and clock-soundness correspondence described in [MEMORY_MODEL.md](MEMORY_MODEL.md),
+bounds connecting unbounded `Nat` arithmetic to `usize`, and treatment of the
+API's initialization, destruction, and panic paths. No SC guarantee is inferred
+from race freedom.
