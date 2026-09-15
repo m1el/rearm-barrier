@@ -114,16 +114,22 @@ def modifyAt (f : Tree → Tree) : Tree → List Nat → Tree
     | some child => t.withChildren (t.children.set k (child.modifyAt f p))
     | none => t
 
+/-- The children of a node at `lo` whose children have width `w`: slot `k`
+covers `[lo + k * w, ...)`, and slots start at or beyond `W` do not exist
+(once one is missing, so are all later ones). `n` slots remain from slot `k`. -/
+def buildChildren (child : Nat → Tree) (W w lo : Nat) : Nat → Nat → List Tree
+  | 0, _ => []
+  | n + 1, k =>
+    if lo + k * w < W then child (lo + k * w) :: buildChildren child W w lo n (k + 1) else []
+
 /-- The tree of `RearmBarrier<_, _, W, C>`: a node of height `h` at `lo`
 covers `[lo, lo + C ^ (h + 1)) ∩ [0, W)`; children whose window would be
 empty do not exist. -/
 def build (W C : Nat) : (h : Nat) → (lo : Nat) → Tree
   | 0, lo => .mk 0 0 (VC.zero (W + 1)) lo (min (lo + C) W) []
   | h + 1, lo =>
-    let w := C ^ (h + 1)
-    .mk 0 0 (VC.zero (W + 1)) lo (min (lo + w * C) W) <|
-      (List.range C).filterMap fun k =>
-        if lo + k * w < W then some (build W C h (lo + k * w)) else none
+    .mk 0 0 (VC.zero (W + 1)) lo (min (lo + C ^ (h + 1) * C) W)
+      (buildChildren (build W C h) W (C ^ (h + 1)) lo C 0)
 
 /-- Every node with its path, in pre-order. -/
 partial def nodes (t : Tree) (path : List Nat := []) : List (List Nat × Tree) :=

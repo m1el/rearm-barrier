@@ -93,7 +93,13 @@ transition system and is differentially tested against the crate.
   height `h` at `lo` over `[lo, lo + C ^ (h + 1)) ∩ [0, W)` (`build_lo`,
   `build_hi`) and the root of every valid configuration covers exactly
   `[0, WORKERS)` (`init_root_size`), which is where the crate's
-  `ticket_tree_alloc` loop enters (`pow_levels_ge`).
+  `ticket_tree_alloc` loop enters (`pow_levels_ge`). Well-formedness
+  (`Wf`: every node covers a non-empty window inside `[0, WORKERS)`, leaves
+  at most `CLUSTER` consumers, inner nodes at most `CLUSTER` children whose
+  windows tile the parent's) holds for `Tree.init` (`init_wf`), is kept by
+  every walk step (`walk_wf`), gives every node's `target_val` as the sum of
+  its children's (`Wf.sum_children`), and discharges the side conditions of
+  the decision theorem along every execution (`walk_crate_wf`).
 * `RearmBarrier/Completion.lean` is the proved part of the protocol. It isolates one
   version's completion as a "game" on the tree, meaning a nondeterministic
   transition system (a `Step` relation whose rules may fire anywhere, in
@@ -166,10 +172,9 @@ What is proved versus checked: the completion game in `Completion.lean`
 is proved for all shapes and all orderings; so are the path/index mapping
 and, for the executable tree, the update, the single-step behaviour of
 `walk` and its agreement with the crate's decision rule, and the window of
-the root. Not proved: that `build`'s children partition their parent's
-window (so that `Tree.invariant` is an inductive invariant of `step`), and
-the refinement from the executable tree to the game; both are checked by
-exploration and by replaying crate traces. The
+the root. Not proved: that `Tree.invariant` (a `partial def`) is an inductive
+invariant of `step`, and the refinement from the executable tree to the
+game; both are checked by exploration and by replaying crate traces. The
 step from the completing `fetch_add` to the producer's `complete` (one
 Release on the probe, one Acquire fence) and the per-version re-arming are
 likewise only checked. Not covered at all: stale relaxed loads that change

@@ -139,6 +139,7 @@ theorem walk_spec {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {or
       node.finished + c.mergeAmount ≤ node.size ∧
       (t'.get c.path).map Tree.counter = some (node.counter + c.mergeAmount) ∧
       (∀ q, ((t'.get q).map Tree.window) = (t.get q).map Tree.window) ∧
+      (∃ f, Tree.Preserves f ∧ t' = t.modifyAt f c.path) ∧
       (next = .finished ↔ node.finished + c.mergeAmount = node.size ∧ node.size = cfg.workers) ∧
       (next = .stop ↔ node.finished + c.mergeAmount < node.size) ∧
       (∀ c', next = .continue c' →
@@ -163,7 +164,7 @@ theorem walk_spec {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {or
       · -- the window is not full yet
         simp only [hlt, ↓reduceIte, WalkResult.ok.injEq] at h
         obtain ⟨rfl, rfl, rfl, rfl⟩ := h
-        refine ⟨rfl, rfl, rfl, by omega, ?_, ?_, ?_, by simp [hlt], by simp⟩
+        refine ⟨rfl, rfl, rfl, by omega, ?_, ?_, ⟨_, hpres1, rfl⟩, ?_, by simp [hlt], by simp⟩
         · rw [Tree.get_modifyAt_self, hnode]
           simp only [Option.map_some, Tree.counter, Tree.size, Tree.version_mk, Tree.finished_mk,
             Tree.lo_mk, Tree.hi_mk]
@@ -193,7 +194,8 @@ theorem walk_spec {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {or
           · -- every worker: finished
             simp only [hall, ↓reduceIte, WalkResult.ok.injEq] at h
             obtain ⟨rfl, rfl, rfl, rfl⟩ := h
-            refine ⟨rfl, rfl, rfl, by omega, hcounter, ?_, by simp [heq, hall], ?_, by simp⟩
+            refine ⟨rfl, rfl, rfl, by omega, hcounter, ?_, ⟨_, hpres2, rfl⟩, by simp [heq, hall], ?_,
+              by simp⟩
             · intro q
               exact Tree.get_window_modifyAt _ hpres2 t c.path q
             · exact ⟨fun h' => by simp at h', fun h' => absurd heq (Nat.ne_of_lt h')⟩
@@ -207,7 +209,7 @@ theorem walk_spec {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {or
                 | cons _ _ => rfl
               simp only [hne, Bool.false_eq_true, ↓reduceIte, WalkResult.ok.injEq] at h
               obtain ⟨rfl, rfl, rfl, rfl⟩ := h
-              refine ⟨rfl, rfl, rfl, by omega, hcounter, ?_, ?_, ?_, ?_⟩
+              refine ⟨rfl, rfl, rfl, by omega, hcounter, ?_, ⟨_, hpres2, rfl⟩, ?_, ?_, ?_⟩
               · intro q
                 exact Tree.get_window_modifyAt _ hpres2 t c.path q
               · exact ⟨fun h' => by simp at h', fun h' => absurd h'.2 hall⟩
@@ -250,7 +252,7 @@ theorem walk_crate {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {o
     (hsize : node.size ≤ cfg.workers) :
     next.toCrate cfg.cluster =
       crateNext cfg.workers cfg.cluster rmw.ticketId node.size v (rmw.old + rmw.amount) := by
-  obtain ⟨node', hnode', hv, hid, hamount, hold, hle, _, _, hfin, hstop, hcont⟩ := walk_spec h
+  obtain ⟨node', hnode', hv, hid, hamount, hold, hle, _, _, _, hfin, hstop, hcont⟩ := walk_spec h
   rw [hnode] at hnode'
   obtain rfl := Option.some.inj hnode'
   subst hv
@@ -317,6 +319,11 @@ theorem build_hi (W C h lo : Nat) : (Tree.build W C h lo).hi = min (lo + C ^ (h 
   cases h with
   | zero => simp [Tree.build, Tree.hi]
   | succ h => simp [Tree.build, Tree.hi, Nat.pow_succ]
+
+theorem build_children (W C h lo : Nat) :
+    (Tree.build W C (h + 1) lo).children =
+      Tree.buildChildren (Tree.build W C h) W (C ^ (h + 1)) lo C 0 := by
+  simp [Tree.build, Tree.children]
 
 theorem build_size_le (W C h lo : Nat) : (Tree.build W C h lo).size ≤ W := by
   simp only [Tree.size, build_lo, build_hi]
@@ -386,5 +393,299 @@ theorem init_root_size (cfg : Config) (hC : 2 ≤ cfg.cluster) :
     (Tree.init cfg).size = cfg.workers := by
   obtain ⟨h1, h2⟩ := init_root_window cfg hC
   simp [Tree.size, h1, h2]
+
+/-! ## Well-formedness
+
+`Wf C W` says what a completion tree for `W` workers and fan-in `C` looks
+like: every node covers a non-empty window inside `[0, W)`, a leaf covers at
+most `C` consumers, and an inner node has at most `C` children whose windows
+tile its own window consecutively (`Tiles`). `Wf_build` shows `build`
+produces such trees, `Wf.modifyAt` and `walk_wf` that the walk keeps them,
+and `Wf.sum_children` is the fact the counting argument needs: a node's
+`target_val` is the sum of its children's.
+-/
+
+/-- The windows of the nodes tile `[a, b)` consecutively. -/
+def Tiles : Nat → Nat → List Tree → Prop
+  | a, b, [] => a = b
+  | a, b, t :: rest => t.lo = a ∧ Tiles t.hi b rest
+
+inductive Wf (C W : Nat) : Tree → Prop
+  | leaf (v f : Nat) (r : VC) (lo hi : Nat) (hlt : lo < hi) (hW : hi ≤ W) (hC : hi - lo ≤ C) :
+      Wf C W (.mk v f r lo hi [])
+  | node (v f : Nat) (r : VC) (lo hi : Nat) (cs : List Tree) (hne : cs ≠ [])
+      (hlt : lo < hi) (hW : hi ≤ W) (hlen : cs.length ≤ C)
+      (htiles : Tiles lo hi cs) (hcs : ∀ c ∈ cs, Wf C W c) :
+      Wf C W (.mk v f r lo hi cs)
+
+/-! ### `buildChildren` -/
+
+theorem buildChildren_length_le (child : Nat → Tree) (W w lo : Nat) :
+    ∀ n k, (Tree.buildChildren child W w lo n k).length ≤ n
+  | 0, _ => by simp [Tree.buildChildren]
+  | n + 1, k => by
+    simp only [Tree.buildChildren]
+    split
+    · simp
+      exact buildChildren_length_le child W w lo n (k + 1)
+    · simp
+
+theorem buildChildren_mem (child : Nat → Tree) (W w lo : Nat) :
+    ∀ n k t, t ∈ Tree.buildChildren child W w lo n k → ∃ x, x < W ∧ t = child x
+  | 0, _, _, h => by simp [Tree.buildChildren] at h
+  | n + 1, k, t, h => by
+    simp only [Tree.buildChildren] at h
+    split at h
+    · rename_i hk
+      simp at h
+      rcases h with rfl | h
+      · exact ⟨_, hk, rfl⟩
+      · exact buildChildren_mem child W w lo n (k + 1) t h
+    · simp at h
+
+theorem buildChildren_ne_nil (child : Nat → Tree) (W w lo n k : Nat) (hn : 0 < n)
+    (hk : lo + k * w < W) : Tree.buildChildren child W w lo n k ≠ [] := by
+  cases n with
+  | zero => omega
+  | succ n => simp [Tree.buildChildren, hk]
+
+/-- The children tile the window: slot `k` starts at `lo + k * w`, capped at `W`. -/
+theorem buildChildren_tiles (child : Nat → Tree) (W w lo : Nat)
+    (hlo : ∀ x, (child x).lo = x) (hhi : ∀ x, (child x).hi = min (x + w) W) :
+    ∀ n k, Tiles (min (lo + k * w) W) (min (lo + (k + n) * w) W)
+      (Tree.buildChildren child W w lo n k)
+  | 0, k => by simp [Tree.buildChildren, Tiles]
+  | n + 1, k => by
+    simp only [Tree.buildChildren]
+    split
+    · rename_i hk
+      simp only [Tiles, hlo, hhi]
+      refine ⟨by omega, ?_⟩
+      have ih := buildChildren_tiles child W w lo hlo hhi n (k + 1)
+      have e1 : lo + k * w + w = lo + (k + 1) * w := by
+        rw [Nat.add_mul, Nat.one_mul]
+        omega
+      have e2 : k + (n + 1) = k + 1 + n := by omega
+      rw [e1, e2]
+      exact ih
+    · rename_i hk
+      simp only [Tiles]
+      have : lo + (k + (n + 1)) * w = lo + k * w + (n + 1) * w := by
+        rw [Nat.add_mul]
+        omega
+      rw [this]
+      omega
+
+/-! ### `build` is well formed -/
+
+theorem Wf_build (W C : Nat) (hC : 1 ≤ C) : ∀ h lo, lo < W → Wf C W (Tree.build W C h lo)
+  | 0, lo, hlo => by
+    simp only [Tree.build]
+    exact .leaf _ _ _ _ _ (by omega) (Nat.min_le_right _ _) (by omega)
+  | h + 1, lo, hlo => by
+    have hw : 0 < C ^ (h + 1) := Nat.pow_pos (by omega)
+    have hwC : 1 ≤ C ^ (h + 1) * C := Nat.mul_pos hw (by omega)
+    simp only [Tree.build]
+    refine .node _ _ _ _ _ _ ?_ ?_ (Nat.min_le_right _ _) ?_ ?_ ?_
+    · exact buildChildren_ne_nil _ _ _ _ _ _ (by omega) (by simpa using hlo)
+    · omega
+    · exact buildChildren_length_le _ _ _ _ _ _
+    · have := buildChildren_tiles (Tree.build W C h) W (C ^ (h + 1)) lo
+        (build_lo W C h) (build_hi W C h) C 0
+      simp only [Nat.zero_mul, Nat.add_zero, Nat.zero_add, Nat.min_eq_left (Nat.le_of_lt hlo)] at this
+      rw [Nat.mul_comm] at this
+      exact this
+    · intro c hc
+      obtain ⟨x, hx, rfl⟩ := buildChildren_mem _ _ _ _ _ _ _ hc
+      exact Wf_build W C hC h x hx
+
+/-- The tree of every valid configuration is well formed. -/
+theorem init_wf (cfg : Config) (hW : 1 ≤ cfg.workers) (hC : 2 ≤ cfg.cluster) :
+    Wf cfg.cluster cfg.workers (Tree.init cfg) :=
+  Wf_build _ _ (by omega) _ 0 hW
+
+/-! ### Consequences of well-formedness -/
+
+theorem Wf.lo_lt_hi {C W : Nat} {t : Tree} (h : Wf C W t) : t.lo < t.hi := by
+  cases h <;> assumption
+
+theorem Wf.hi_le {C W : Nat} {t : Tree} (h : Wf C W t) : t.hi ≤ W := by
+  cases h <;> assumption
+
+theorem Wf.size_pos {C W : Nat} {t : Tree} (h : Wf C W t) : 0 < t.size := by
+  have := h.lo_lt_hi
+  simp only [Tree.size]
+  omega
+
+theorem Wf.size_le {C W : Nat} {t : Tree} (h : Wf C W t) : t.size ≤ W := by
+  have := h.hi_le
+  simp only [Tree.size]
+  omega
+
+theorem Wf.children_wf {C W : Nat} {t : Tree} (h : Wf C W t) : ∀ c ∈ t.children, Wf C W c := by
+  cases h with
+  | leaf => simp [Tree.children]
+  | node _ _ _ _ _ _ _ _ _ _ _ hcs => exact hcs
+
+theorem Wf.children_length {C W : Nat} {t : Tree} (h : Wf C W t) : t.children.length ≤ C := by
+  cases h with
+  | leaf => simp [Tree.children]
+  | node _ _ _ _ _ _ _ _ _ hlen => exact hlen
+
+/-- Every node reachable by a path is well formed. -/
+theorem Wf.get {C W : Nat} : ∀ (p : List Nat) {t n : Tree}, Wf C W t → t.get p = some n → Wf C W n
+  | [], t, n, h, hg => by
+    simp [Tree.get] at hg
+    exact hg ▸ h
+  | k :: p, t, n, h, hg => by
+    simp only [Tree.get] at hg
+    split at hg
+    · rename_i c hk
+      exact Wf.get p (h.children_wf c (mem_of_getElem?' _ _ _ hk)) hg
+    · simp at hg
+where
+  mem_of_getElem?' : (cs : List Tree) → (k : Nat) → (c : Tree) → cs[k]? = some c → c ∈ cs
+    | [], _, _, h => by simp at h
+    | _ :: _, 0, _, h => by simp at h; simp [h]
+    | _ :: cs, k + 1, c, h => by
+      simp at h
+      exact List.mem_cons_of_mem _ (mem_of_getElem?' cs k c h)
+
+theorem lt_length_of_getElem?' : (cs : List Tree) → (k : Nat) → (c : Tree) → cs[k]? = some c →
+    k < cs.length
+  | [], _, _, h => by simp at h
+  | _ :: _, 0, _, _ => by simp
+  | _ :: cs, k + 1, c, h => by
+    simp at h
+    have := lt_length_of_getElem?' cs k c h
+    simp
+    omega
+
+/-- Every digit of a path into a well-formed tree is below the fan-in. -/
+theorem Wf.digits {C W : Nat} : ∀ (p : List Nat) {t n : Tree}, Wf C W t → t.get p = some n →
+    ∀ k ∈ p, k < C
+  | [], _, _, _, _ => by simp
+  | j :: p, t, n, h, hg => by
+    simp only [Tree.get] at hg
+    split at hg
+    · rename_i c hj
+      have hjlt : j < t.children.length := lt_length_of_getElem?' _ _ _ hj
+      have hlen := h.children_length
+      have hrest := Wf.digits p (h.children_wf c (Wf.get.mem_of_getElem?' _ _ _ hj)) hg
+      intro k hk
+      simp at hk
+      rcases hk with rfl | hk
+      · omega
+      · exact hrest k hk
+    · simp at hg
+
+/-- A node's window is the sum of its children's: `target_val` adds up. -/
+theorem tiles_sum : ∀ (cs : List Tree) (a b : Nat), Tiles a b cs → (∀ c ∈ cs, c.lo ≤ c.hi) →
+    a ≤ b ∧ (cs.map Tree.size).sum = b - a
+  | [], a, b, h, _ => by simp [Tiles] at h; simp [h]
+  | c :: cs, a, b, h, hle => by
+    simp only [Tiles] at h
+    obtain ⟨hlo, hrest⟩ := h
+    have hc := hle c (by simp)
+    obtain ⟨h1, h2⟩ := tiles_sum cs c.hi b hrest fun x hx => hle x (by simp [hx])
+    simp only [List.map_cons, List.sum_cons, Tree.size, h2, hlo]
+    omega
+
+theorem Wf.sum_children {C W : Nat} {v f : Nat} {r : VC} {lo hi : Nat} {cs : List Tree}
+    (h : Wf C W (.mk v f r lo hi cs)) (hne : cs ≠ []) : (cs.map Tree.size).sum = hi - lo := by
+  cases h with
+  | leaf => exact absurd rfl hne
+  | node _ _ _ _ _ _ _ _ _ _ htiles hcs =>
+    exact (tiles_sum cs lo hi htiles fun c hc => Nat.le_of_lt (hcs c hc).lo_lt_hi).2
+
+/-! ### Well-formedness is preserved by updates -/
+
+theorem tiles_set : ∀ (cs : List Tree) (a b k : Nat) (c c' : Tree), Tiles a b cs →
+    cs[k]? = some c → c'.window = c.window → Tiles a b (cs.set k c')
+  | [], _, _, _, _, _, _, hk, _ => by simp at hk
+  | x :: cs, a, b, 0, c, c', h, hk, hw => by
+    simp at hk
+    subst hk
+    simp only [Tiles, List.set_cons_zero] at h ⊢
+    simp only [Tree.window, Prod.mk.injEq] at hw
+    rw [hw.1, hw.2]
+    exact h
+  | x :: cs, a, b, k + 1, c, c', h, hk, hw => by
+    simp at hk
+    simp only [Tiles, List.set_cons_succ] at h ⊢
+    exact ⟨h.1, tiles_set cs _ b k c c' h.2 hk hw⟩
+
+theorem Wf.modifyAt {C W : Nat} {f : Tree → Tree} (hf : Tree.Preserves f) :
+    ∀ (p : List Nat) {t : Tree}, Wf C W t → Wf C W (t.modifyAt f p)
+  | [], t, h => by
+    simp only [Tree.modifyAt]
+    cases hft : f t with
+    | mk v' f' r' lo' hi' cs' =>
+      have hlo := hf.lo t
+      have hhi := hf.hi t
+      have hcs := hf.children t
+      rw [hft] at hlo hhi hcs
+      simp only [Tree.lo_mk, Tree.hi_mk, Tree.children_mk] at hlo hhi hcs
+      subst hlo hhi hcs
+      cases h with
+      | leaf _ _ _ _ _ hlt hW hC => exact .leaf _ _ _ _ _ hlt hW hC
+      | node _ _ _ _ _ _ hne hlt hW hlen htiles hcs => exact .node _ _ _ _ _ _ hne hlt hW hlen htiles hcs
+  | k :: p, t, h => by
+    simp only [Tree.modifyAt]
+    cases hk : t.children[k]? with
+    | none => exact h
+    | some child =>
+      cases h with
+      | leaf => simp [Tree.children] at hk
+      | node v n r lo hi cs hne hlt hW hlen htiles hcs =>
+        simp only [Tree.children_mk] at hk
+        have hchild := hcs child (Wf.get.mem_of_getElem?' _ _ _ hk)
+        have ih := Wf.modifyAt hf p hchild
+        simp only [Tree.withChildren]
+        refine .node _ _ _ _ _ _ ?_ hlt hW (by simpa using hlen) ?_ ?_
+        · intro he
+          have := congrArg List.length he
+          simp at this
+          exact hne this
+        · refine tiles_set cs lo hi k child _ htiles hk ?_
+          have := Tree.get_window_modifyAt f hf child p []
+          simpa [Tree.get] using this
+        · intro c hc
+          rcases mem_of_mem_set' cs k _ c hc with hc | rfl
+          · exact hcs c hc
+          · exact ih
+where
+  mem_of_mem_set' : (cs : List Tree) → (k : Nat) → (x y : Tree) → y ∈ cs.set k x → y ∈ cs ∨ y = x
+    | [], _, _, _, h => by simp at h
+    | _ :: _, 0, _, _, h => by
+      simp at h
+      rcases h with rfl | h
+      · exact Or.inr rfl
+      · exact Or.inl (by simp [h])
+    | c :: cs, k + 1, x, y, h => by
+      simp at h
+      rcases h with rfl | h
+      · exact Or.inl (by simp)
+      · rcases mem_of_mem_set' cs k x y h with h | h
+        · exact Or.inl (by simp [h])
+        · exact Or.inr h
+
+/-- The walk keeps the tree well formed. -/
+theorem walk_wf {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {ord : MemOrd}
+    {t' : Tree} {vc' : VC} {rmw : Rmw} {next : Next}
+    (hwf : Wf cfg.cluster cfg.workers t) (h : t.walk cfg c v vc ord = .ok t' vc' rmw next) :
+    Wf cfg.cluster cfg.workers t' := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, ⟨f, hf, rfl⟩, _⟩ := walk_spec h
+  exact Wf.modifyAt hf _ hwf
+
+/-- On a well-formed tree the walk decides as the crate does, with no side
+conditions: this holds along every execution from `Tree.init`. -/
+theorem walk_crate_wf {cfg : Config} {t : Tree} {c : Cursor} {v : Nat} {vc : VC} {ord : MemOrd}
+    {t' : Tree} {vc' : VC} {rmw : Rmw} {next : Next} {node : Tree}
+    (hwf : Wf cfg.cluster cfg.workers t) (hC : 0 < cfg.cluster)
+    (h : t.walk cfg c v vc ord = .ok t' vc' rmw next) (hnode : t.get c.path = some node) :
+    next.toCrate cfg.cluster =
+      crateNext cfg.workers cfg.cluster rmw.ticketId node.size v (rmw.old + rmw.amount) :=
+  walk_crate h hnode hC (hwf.digits _ hnode) (Wf.get _ hwf hnode).size_le
 
 end RearmBarrier
