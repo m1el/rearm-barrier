@@ -91,21 +91,28 @@ def counter (t : Tree) : Nat := t.size * t.version + t.finished
 
 def isLeaf (t : Tree) : Bool := t.children.isEmpty
 
+/-- The window of consumer IDs a node covers. -/
+def window (t : Tree) : Nat × Nat := (t.lo, t.hi)
+
+/-- The node with its children replaced. -/
+def withChildren : Tree → List Tree → Tree
+  | .mk v n r lo hi _, cs => .mk v n r lo hi cs
+
 /-- The node at `path` -/
 def get : Tree → List Nat → Option Tree
   | t, [] => some t
-  | .mk _ _ _ _ _ cs, k :: p =>
-    match cs[k]? with
+  | t, k :: p =>
+    match t.children[k]? with
     | some c => c.get p
     | none => none
 
 /-- Apply `f` to the node at `path` (the identity if there is no such node). -/
 def modifyAt (f : Tree → Tree) : Tree → List Nat → Tree
   | t, [] => f t
-  | .mk v n r lo hi cs, k :: p =>
-    match cs[k]? with
-    | some child => .mk v n r lo hi (cs.set k (child.modifyAt f p))
-    | none => .mk v n r lo hi cs
+  | t, k :: p =>
+    match t.children[k]? with
+    | some child => t.withChildren (t.children.set k (child.modifyAt f p))
+    | none => t
 
 /-- The tree of `RearmBarrier<_, _, W, C>`: a node of height `h` at `lo`
 covers `[lo, lo + C ^ (h + 1)) ∩ [0, W)`; children whose window would be
@@ -321,7 +328,9 @@ def Tree.walk (cfg : Config) (t : Tree) (c : Cursor) (v : Nat) (vc : VC) (ord : 
     else
       let old := node.counter
       let finished := node.finished + c.mergeAmount
-      let (vc, rel) := rmwClocks vc node.rel ord
+      let clocks := rmwClocks vc node.rel ord
+      let vc := clocks.1
+      let rel := clocks.2
       let rmw := { ticketId := heapIndex cfg.cluster c.path, amount := c.mergeAmount, old }
       if finished < node.size then
         let t := t.modifyAt (fun n => .mk n.version finished rel n.lo n.hi n.children) c.path

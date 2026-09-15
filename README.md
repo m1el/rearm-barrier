@@ -80,7 +80,21 @@ transition system and is differentially tested against the crate.
   their `fetch_add`, a live inner node's `finished` plus the contributions
   in flight towards it is the size of its children one version ahead, and
   the ancestors of the node covering every worker are never touched.
-* `RearmBarrier/Completion.lean` is the proved part. It isolates one
+* `RearmBarrier/TreeProofs.lean` proves the executable tree's basic
+  properties: `modifyAt` changes exactly the node at its path and, for a
+  window-preserving update, no window anywhere (`get_modifyAt_self`,
+  `get_window_modifyAt`); `Tree.walk` is one `fetch_add` on the node under
+  the cursor, with the crate's ticket index, the cursor's amount and the
+  node's counter as `old`, leaving that counter at `old + amount` and every
+  window unchanged (`walk_spec`); its decision is the crate's, `if new_val ==
+  WORKERS * (v + 1) { finished } else if ticket_id == 0 || new_val !=
+  target_val * (v + 1) { stop } else { continue at (ticket_id - 1) /
+  CLUSTER with target_val }` (`walk_crate`); `Tree.build` places a node of
+  height `h` at `lo` over `[lo, lo + C ^ (h + 1)) ∩ [0, W)` (`build_lo`,
+  `build_hi`) and the root of every valid configuration covers exactly
+  `[0, WORKERS)` (`init_root_size`), which is where the crate's
+  `ticket_tree_alloc` loop enters (`pow_levels_ge`).
+* `RearmBarrier/Completion.lean` is the proved part of the protocol. It isolates one
   version's completion as a "game" on the tree, meaning a nondeterministic
   transition system (a `Step` relation whose rules may fire anywhere, in
   any order; a run is any sequence of steps): consumers are unit leaves, a
@@ -149,10 +163,13 @@ both Miri and `rearm-model explore` as a race between the producer's job
 write and the consumer's read inside `func`.
 
 What is proved versus checked: the completion game in `Completion.lean`
-is proved for all shapes and all orderings, and so is the path/index
-mapping; that the executable tree in `TreeModel.lean` is an instance of
-the game is checked by exploration and by replaying crate traces, not
-proved. The
+is proved for all shapes and all orderings; so are the path/index mapping
+and, for the executable tree, the update, the single-step behaviour of
+`walk` and its agreement with the crate's decision rule, and the window of
+the root. Not proved: that `build`'s children partition their parent's
+window (so that `Tree.invariant` is an inductive invariant of `step`), and
+the refinement from the executable tree to the game; both are checked by
+exploration and by replaying crate traces. The
 step from the completing `fetch_add` to the producer's `complete` (one
 Release on the probe, one Acquire fence) and the per-version re-arming are
 likewise only checked. Not covered at all: stale relaxed loads that change

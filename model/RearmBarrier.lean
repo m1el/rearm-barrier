@@ -1,6 +1,7 @@
 import RearmBarrier.Tree
 import RearmBarrier.Basics
 import RearmBarrier.TreeModel
+import RearmBarrier.TreeProofs
 import RearmBarrier.Model
 import RearmBarrier.Spec
 import RearmBarrier.Explore
