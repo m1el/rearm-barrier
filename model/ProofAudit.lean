@@ -20,3 +20,4 @@ import RearmBarrier
 #print axioms RearmBarrier.ExecutionOrder.acyclic
 #print axioms RearmBarrier.ExecutionOrder.key_before
 #print axioms RearmBarrier.ExecutionOrder.key_injective
+#print axioms RearmBarrier.Completion.run_completes
