@@ -5,6 +5,7 @@ import RearmBarrier.TreeProofs
 import RearmBarrier.TreeInvariant
 import RearmBarrier.TreeInit
 import RearmBarrier.StepInvariant
+import RearmBarrier.Protocol
 import RearmBarrier.Model
 import RearmBarrier.Spec
 import RearmBarrier.Explore
