@@ -58,8 +58,13 @@ transition system and is differentially tested against the crate.
   operation (or successful spin-loop exit) of `producer` and `consumer`,
   with the non-atomic accesses to the job and result slots split into
   begin/end steps so that overlapping accesses are visible as states.
-  The atomics are interleaved sequentially consistently; the file explains
-  why that is sound for the counters the model observes.
+  The atomics are interleaved sequentially consistently, which is exact
+  for counters only ever modified by `fetch_add`; on top of that the model
+  tracks C11 happens-before with vector clocks (the scheme of Miri's data
+  race detector and loom), using the orderings of `src/lib.rs`: Release on
+  publishing, AcqRel on the tickets, Release on finishing, and the Acquire
+  fences after the spin loops. Every non-atomic access must happen after
+  each conflicting earlier one, otherwise the step is a data race.
 * `RearmBarrier/Spec.lean` states what the barrier promises: `func` sees
   the job of its version, `complete` sees every result of its version, no
   conflicting accesses to the job or result slots overlap, the walk stays
@@ -72,6 +77,7 @@ transition system and is differentially tested against the crate.
 ```
 cd model && lake build
 .lake/build/bin/rearm-model explore 5 2 2        # every interleaving of 5 workers, fan-in 2, 2 versions
+.lake/build/bin/rearm-model explore 3 2 2 consumer-fence   # ... with the consumer's Acquire fence removed
 .lake/build/bin/rearm-model check trace.txt      # is this crate trace an execution of the model?
 .lake/build/bin/rearm-model simulate 7 3 4 42    # a random execution of the model, in trace syntax
 .lake/build/bin/rearm-model storage 64 8         # ticket_storage for every shape
@@ -102,6 +108,16 @@ observed counter values, performs exactly the operations the crate recorded
 along the way. If the crate hangs, the harness prints the events so far and
 the checker reports whether the model agrees that they lead to a deadlock.
 
-What the model does not cover: memory-ordering bugs (a missing fence is
-invisible to the model, which assumes the counters are read consistently),
-and the `panic` paths for duplicate producers or consumers.
+Weakening any single ordering (`publish`, `ticket`, `finish`,
+`producer-fence`, `consumer-fence`) makes exploration report a data race
+with the two accesses involved. Traces cannot exhibit ordering bugs, since
+the hardware will not show them; the runtime oracle for orderings is
+`cargo miri test`, whose data race detector uses the same happens-before
+rules. Removing the consumer's Acquire fence, for example, is reported by
+both Miri and `rearm-model explore` as a race between the producer's job
+write and the consumer's read inside `func`.
+
+What the model does not cover: stale relaxed loads that change control
+flow (they cannot here, since every spin condition is monotone in a counter
+that only grows), and the `panic` paths for duplicate producers or
+consumers.

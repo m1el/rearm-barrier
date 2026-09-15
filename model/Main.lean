@@ -5,8 +5,10 @@ open RearmBarrier
 def usage : String :=
   "usage:\n" ++
   "  rearm-model storage MAX_WORKERS MAX_CLUSTER   print `w c ticket_storage(w, c)` for every shape\n" ++
-  "  rearm-model explore WORKERS CLUSTER COUNT [MAX_STATES]\n" ++
-  "                                               exhaustively check every interleaving\n" ++
+  "  rearm-model explore WORKERS CLUSTER COUNT [MAX_STATES] [WEAKEN...]\n" ++
+  "                                               exhaustively check every interleaving; WEAKEN is any of\n" ++
+  "                                               publish, ticket, finish (fetch_add -> Relaxed),\n" ++
+  "                                               producer-fence, consumer-fence (drop the Acquire fence)\n" ++
   "  rearm-model check TRACE_FILE                  check that a crate trace is an execution of the model\n" ++
   "  rearm-model simulate WORKERS CLUSTER COUNT SEED\n" ++
   "                                               print a trace of the model under a random schedule\n"
@@ -34,13 +36,31 @@ def showPath (path : List (Thread × Option Event)) : String :=
     | some e => s!"  {t} {e}\n"
     | none => s!"  {t} (local step)\n"
 
-def cmdExplore (w c n : String) (maxStates : Option String) : IO UInt32 := do
-  let cfg : Config := { workers := ← nat! w, cluster := ← nat! c, count := ← nat! n }
+def weaken (o : Orderings) : String → Option Orderings
+  | "publish" => some { o with publish := .relaxed }
+  | "ticket" => some { o with ticket := .relaxed }
+  | "finish" => some { o with finish := .relaxed }
+  | "producer-fence" => some { o with producerFence := false }
+  | "consumer-fence" => some { o with consumerFence := false }
+  | _ => none
+
+def cmdExplore (w c n : String) (rest : List String) : IO UInt32 := do
+  let mut cfg : Config := { workers := ← nat! w, cluster := ← nat! c, count := ← nat! n }
   if !cfg.valid then
     return ← fail s!"invalid configuration: WORKERS = {cfg.workers}, CLUSTER = {cfg.cluster}"
-  let maxStates ← match maxStates with
-    | some m => nat! m
-    | none => pure 2000000
+  let mut maxStates := 2000000
+  let mut weakened : List String := []
+  for arg in rest do
+    match arg.toNat? with
+    | some m => maxStates := m
+    | none =>
+      match weaken cfg.orderings arg with
+      | some o =>
+        cfg := { cfg with orderings := o }
+        weakened := weakened ++ [arg]
+      | none => return ← fail s!"unknown argument `{arg}`\n{usage}"
+  if !weakened.isEmpty then
+    IO.println s!"weakened orderings: {weakened}"
   let res := explore cfg maxStates
   match res.failure with
   | some (msg, path, s) =>
@@ -82,8 +102,7 @@ def cmdSimulate (w c n seed : String) : IO UInt32 := do
 def main (args : List String) : IO UInt32 := do
   match args with
   | ["storage", w, c] => cmdStorage w c
-  | ["explore", w, c, n] => cmdExplore w c n none
-  | ["explore", w, c, n, m] => cmdExplore w c n (some m)
+  | "explore" :: w :: c :: n :: rest => cmdExplore w c n rest
   | ["check", file] => cmdCheck file
   | ["simulate", w, c, n, seed] => cmdSimulate w c n seed
   | _ => fail usage

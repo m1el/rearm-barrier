@@ -53,6 +53,7 @@ private partial def loop (cfg : Config) (maxStates : Nat) (f : Frontier) : Explo
         | .blocked => none
         | .step s' _ => some (Sum.inl (t, s'))
         | .fault m => some (Sum.inr s!"{t}: {m}")
+        | .race m => some (Sum.inr s!"{t}: {m}")
       match succ.find? (·.isRight) with
       | some (.inr m) => fail m
       | _ =>

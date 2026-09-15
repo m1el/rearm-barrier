@@ -89,10 +89,6 @@ def parseTrace (text : String) : Except String Trace := do
 
 /-! ## Replay -/
 
-private def threadIndex : Thread → Nat
-  | .producer => 0
-  | .consumer id => id + 1
-
 structure Replay where
   cfg : Config
   timedOut : Bool
@@ -153,6 +149,7 @@ private partial def tryThread (r : Replay) (t : Thread) : Attempt :=
   | some (target :: rest) =>
     match step r.cfg r.state t with
     | .fault m => .mismatch s!"model fault on thread `{t}`: {m}\n{describeState r}"
+    | .race m => .mismatch s!"thread `{t}`: {m}\n{describeState r}"
     | .step s none => tryThread (commit r t s none) t
     | .step s (some ev) =>
       if ev == target then
@@ -278,6 +275,7 @@ where
           | none => acc
         go s' rng acc (steps + 1)
       | .fault m => throw s!"model fault on `{t}`: {m}\n{s.describe}"
+      | .race m => throw s!"{m}\n{s.describe}"
       | .blocked => throw "enabled thread is blocked"
 
 end RearmBarrier

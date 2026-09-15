@@ -37,7 +37,7 @@ diff "$OUT/storage.crate" "$OUT/storage.model"
 echo "ok: $(wc -l < "$OUT/storage.model" | tr -d ' ') shapes agree"
 
 echo "== model: exhaustive exploration of small shapes"
-for shape in "1 2 3" "2 2 3" "3 2 3" "4 2 2" "5 2 2" "3 3 2" "4 3 2" "5 3 1" "4 4 2" "6 8 2"; do
+for shape in "1 2 3" "2 2 3" "3 2 3" "4 2 2" "5 2 2" "3 3 2" "4 3 2" "5 3 1" "4 4 2" "6 8 1"; do
   # shellcheck disable=SC2086
   "$MODEL" explore $shape
 done
