@@ -1,0 +1,164 @@
+64 cores; 5 trials of ~300ms each; times are per round (median/min/max over trials)
+
+workers = 1 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2             171          165          334        5847953     1.29x     384122
+  rearm C=4             133          132          152        7518797     1.00x     482315
+  rearm C=16            134          132          135        7462687     1.01x     471698
+  rearm C=64            141          138          142        7092199     1.06x     449775
+  atomic                141          137          143        7092199     1.06x     449101
+  mutex                 494          301          646        2024291     3.71x     100133
+
+workers = 3 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2             792          572          871        1262626     1.78x     216294
+  rearm C=4             778          650          908        1285347     1.74x     239043
+  rearm C=16            760          737          923        1315789     1.70x     223380
+  rearm C=64            446          275          961        2242152     1.00x     237529
+  atomic                828          266          893        1207729     1.86x     250000
+  mutex                4787         3749         5415         208899    10.73x      63451
+
+workers = 7 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            1434         1406         1618         697350     1.20x      41987
+  rearm C=4            1199         1131         1336         834028     1.00x     185299
+  rearm C=16           1258         1226         1350         794913     1.05x     150375
+  rearm C=64           1295         1251         1300         772201     1.08x     156087
+  atomic               1243         1179         1303         804505     1.04x     169587
+  mutex               18340        17983        19351          54526    15.30x      14268
+
+workers = 11 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            1578         1508         1705         633714     1.07x     148883
+  rearm C=4            1475         1420         1577         677966     1.00x     190355
+  rearm C=16           1513         1446         1538         660939     1.03x     148148
+  rearm C=64           1547         1494         1582         646412     1.05x     167785
+  atomic               1474         1370         1502         678426     1.00x     163043
+  mutex               33935        32872        34466          29468    23.02x       8089
+
+workers = 15 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            1749         1657         1784         571755     1.12x     153609
+  rearm C=4            1820         1749         1863         549451     1.16x      25127
+  rearm C=16           1566         1560         1756         638570     1.00x     154718
+  rearm C=64           1670         1543         1800         598802     1.07x     141709
+  atomic               1701         1534         1767         587889     1.09x     142653
+  mutex               49650        47615        50315          20141    31.70x       5561
+
+workers = 23 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            2300         2268         2465         434783     1.09x     139925
+  rearm C=4            2188         2153         2265         457038     1.03x     145067
+  rearm C=16           2115         2046         2220         472813     1.00x     140318
+  rearm C=64           2355         2092         2545         424628     1.11x     152594
+  atomic               2118         2055         2284         472144     1.00x      42087
+  mutex               88953        84122        92142          11242    42.06x       3409
+
+workers = 31 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            2739         2463         3341         365097     1.00x     121852
+  rearm C=4            2958         2868         3090         338066     1.08x     114854
+  rearm C=16           3001         2629         3380         333222     1.10x     121016
+  rearm C=64           2762         2692         3070         362056     1.01x     128589
+  atomic               3002         2749         3107         333111     1.10x     127986
+  mutex              122011       121210       127454           8196    44.55x       2437
+
+workers = 47 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            3579         3215         4259         279408     1.50x     114329
+  rearm C=4            3162         2813         3384         316256     1.33x     113207
+  rearm C=16           2599         2565         2745         384763     1.09x     113207
+  rearm C=64           2379         2309         2407         420345     1.00x     119189
+  atomic               3044         2727         3288         328515     1.28x     121802
+  mutex              178771       177362       197767           5594    75.15x       1786
+
+workers = 63 (+1 producer), work = 0 xorshift iterations per worker per round, results read
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            5001         3938        10256         199960     1.53x     102599
+  rearm C=4            3455         3177         3800         289436     1.05x      91185
+  rearm C=16           3277         3108         5708         305157     1.00x     102006
+  rearm C=64           3560         3059         3762         280899     1.09x     114372
+  atomic               3360         2970         3627         297619     1.03x     113164
+  mutex              364717       314499       812688           2742   111.30x        753
+64 cores; 5 trials of ~300ms each; times are per round (median/min/max over trials)
+
+workers = 1 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2             175           97          592        5714286     1.51x     580270
+  rearm C=4             284          135          438        3521127     2.45x     370828
+  rearm C=16            116           93          121        8620690     1.00x     477707
+  rearm C=64            140           96          213        7142857     1.21x     480000
+  atomic                130           97          252        7692308     1.12x     487012
+  mutex                 290          288          381        3448276     2.50x     560747
+
+workers = 3 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2             343          221          682        2915452     1.32x     228484
+  rearm C=4             382          229          715        2617801     1.47x     226586
+  rearm C=16            260          231          648        3846154     1.00x     260190
+  rearm C=64            287          284          367        3484321     1.10x     224047
+  atomic                578          261          750        1730104     2.22x     211565
+  mutex                4120         3216         4962         242718    15.85x      51939
+
+workers = 7 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            1289         1173         1419         775795     1.12x     171135
+  rearm C=4            1158         1088         1323         863558     1.01x     194931
+  rearm C=16           1148         1096         1223         871080     1.00x     168918
+  rearm C=64           1182         1117         1285         846024     1.03x     180072
+  atomic               1206         1122         1273         829187     1.05x     158144
+  mutex               17053        16240        17471          58641    14.85x      16047
+
+workers = 11 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            1475         1363         1519         677966     1.10x     175849
+  rearm C=4            1491         1424         1515         670691     1.11x     179318
+  rearm C=16           1475         1409         1568         677966     1.10x      43789
+  rearm C=64           1338         1236         1458         747384     1.00x     152594
+  atomic               1643         1479         1694         608643     1.23x      44464
+  mutex               31394        29890        32321          31853    23.46x       9400
+
+workers = 15 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            1571         1535         1638         636537     1.07x     167410
+  rearm C=4            1550         1494         1594         645161     1.06x     159151
+  rearm C=16           1544         1516         1591         647668     1.05x     170940
+  rearm C=64           1529         1447         1579         654022     1.04x     156168
+  atomic               1469         1434         1515         680735     1.00x     168918
+  mutex               46086        44852        47539          21699    31.37x       7137
+
+workers = 23 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            1805         1779         1826         554017     1.00x     161030
+  rearm C=4            1815         1698         1834         550964     1.01x     170648
+  rearm C=16           1838         1804         1930         544070     1.02x     164383
+  rearm C=64           1825         1727         1860         547945     1.01x     166204
+  atomic               1821         1809         1839         549149     1.01x     165471
+  mutex               82842        79983        85065          12071    45.90x       4861
+
+workers = 31 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            2022         2006         2028         494560     1.05x     147420
+  rearm C=4            2081         1881         2108         480538     1.08x     146771
+  rearm C=16           2034         2013         2071         491642     1.06x     124429
+  rearm C=64           1936         1920         1947         516529     1.01x     163487
+  atomic               1926         1902         1929         519211     1.00x     162954
+  mutex              122651       120109       124194           8153    63.68x       2796
+
+workers = 47 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            2077         2034         2216         481464     1.05x     143678
+  rearm C=4            2096         2024         2147         477099     1.06x     150075
+  rearm C=16           2144         2069         2185         466418     1.08x     145843
+  rearm C=64           1992         1946         2016         502008     1.00x     152439
+  atomic               1985         1911         2016         503778     1.00x     151285
+  mutex              172642       167790       180479           5792    86.97x       1783
+
+workers = 63 (+1 producer), work = 0 xorshift iterations per worker per round, results skip
+  barrier         median ns       min ns       max ns       rounds/s   vs best     rounds
+  rearm C=2            2313         2289         2419         432339     1.09x     117600
+  rearm C=4            2113         1994         2210         473261     1.00x     148588
+  rearm C=16           2262         2186         4103         442087     1.07x     141776
+  rearm C=64           2160         2116         2344         462963     1.02x     150075
+  atomic               2145         2062         2184         466200     1.02x     136736
+  mutex              311443       248347       558520           3211   147.39x       1284
