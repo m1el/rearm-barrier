@@ -82,6 +82,22 @@ transition system and is differentially tested against the crate.
   exploring with it (the default) is a bisimulation check of the two
   representations; `heapIndex_append` and `parent_heapIndex` prove that
   the tree's paths map onto the crate's heap layout.
+* `RearmBarrier/Completion.lean` is the proved part. It isolates one
+  version's completion as a "game" on the tree, meaning a nondeterministic
+  transition system (a `Step` relation whose rules may fire anywhere, in
+  any order; a run is any sequence of steps): consumers are unit leaves, a
+  consumer finishing or a pending child being applied to its parent are
+  the two moves, and applying joins the child's clock into the parent's
+  (the `AcqRel` `fetch_add`).
+  For every tree shape and every sequence of moves it proves that the
+  counting invariant is preserved, that a done node has every consumer
+  below it finished and a clock dominating all of theirs (the
+  happens-before edge from every result write to the completing
+  `fetch_add`), that a done node never changes again (the barrier
+  completes exactly once), and that once every consumer has finished a
+  move is always possible while the root is not done and every move
+  decreases a measure, so any ordering of completion events finishes.
+  The theorems use only `propext`, `Quot.sound` and `Classical.choice`.
 * `RearmBarrier/Spec.lean` states what the barrier promises: `func` sees
   the job of its version, `complete` sees every result of its version, no
   conflicting accesses to the job or result slots overlap, the walk stays
@@ -135,7 +151,13 @@ rules. Removing the consumer's Acquire fence, for example, is reported by
 both Miri and `rearm-model explore` as a race between the producer's job
 write and the consumer's read inside `func`.
 
-What the model does not cover: stale relaxed loads that change control
-flow (they cannot here, since every spin condition is monotone in a counter
-that only grows), and the `panic` paths for duplicate producers or
-consumers.
+What is proved versus checked: the completion game in `Completion.lean`
+is proved for all shapes and all orderings; that the tree engine is an
+instance of that game, and that the flat engine matches the tree engine,
+is checked by exploration and by replaying crate traces, not proved. The
+step from the completing `fetch_add` to the producer's `complete` (one
+Release on the probe, one Acquire fence) and the per-version re-arming are
+likewise only checked. Not covered at all: stale relaxed loads that change
+control flow (they cannot here, since every spin condition is monotone in
+a counter that only grows), and the `panic` paths for duplicate producers
+or consumers.

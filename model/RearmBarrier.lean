@@ -6,3 +6,4 @@ import RearmBarrier.Product
 import RearmBarrier.Spec
 import RearmBarrier.Explore
 import RearmBarrier.Trace
+import RearmBarrier.Completion
