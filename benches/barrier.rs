@@ -6,11 +6,15 @@
 //! * `atomic`: the same spin-on-probe protocol, but every worker increments one
 //!   shared completion counter, so all of them hit the same cache line on
 //!   every round.
-//! * `mutex`: a single `std::sync::Mutex` holding the published version and
-//!   the completion count; every thread spins by locking it to poll.
+//! * `mutex` (only with `--with-mutex`): a single `std::sync::Mutex` holding
+//!   the published version and the completion count; every thread spins by
+//!   locking it to poll. It is orders of magnitude slower and gets very slow
+//!   with many threads, so it is off by default.
 //!
 //! One round = the producer builds a job, every consumer processes it and
-//! writes its result, and the producer reads all results. A round's consumer
+//! writes its result, and the producer reads all results (`--results skip`
+//! leaves them unread, which removes `WORKERS` cache-line pulls per round from
+//! the producer; see `examples/contention.rs`). A round's consumer
 //! work is `WORK` iterations of xorshift, so `WORK = 0` measures coordination
 //! overhead alone.
 //!
@@ -225,7 +229,12 @@ fn work(job: u64, id: usize, iters: u64) -> u64 {
 }
 
 /// Run `rounds` rounds and return the mean time per round after `warmup`
-fn run_once<B: Barrier<W>, const W: usize>(rounds: usize, warmup: usize, iters: u64) -> Duration {
+fn run_once<B: Barrier<W>, const W: usize>(
+    rounds: usize,
+    warmup: usize,
+    iters: u64,
+    read_results: bool,
+) -> Duration {
     assert!(warmup >= 1 && rounds > warmup);
     let barrier = B::new();
     let mut start = None;
@@ -245,8 +254,10 @@ fn run_once<B: Barrier<W>, const W: usize>(rounds: usize, warmup: usize, iters: 
             rounds,
             |version| version as u64,
             |version, results| {
-                let sum = results.iter().fold(0u64, |a, r| a.wrapping_add(r.0));
-                black_box(sum);
+                if read_results {
+                    let sum = results.iter().fold(0u64, |a, r| a.wrapping_add(r.0));
+                    black_box(sum);
+                }
                 if version + 1 == warmup {
                     start = Some(Instant::now());
                 } else if version + 1 == rounds {
@@ -271,11 +282,11 @@ fn measure<B: Barrier<W>, const W: usize>(opts: &Opts, iters: u64) -> Stats {
     // Kept small so that slow configurations (a mutex polled by hundreds of
     // threads) finish in reasonable time; fast ones get more rounds below.
     const WARMUP: usize = 100;
-    let estimate = run_once::<B, W>(WARMUP + 200, WARMUP, iters);
+    let estimate = run_once::<B, W>(WARMUP + 200, WARMUP, iters, opts.read_results);
     let rounds = (opts.time.as_nanos() / estimate.as_nanos().max(1)).clamp(200, 50_000_000) as usize;
 
     let mut samples: Vec<Duration> =
-        (0..opts.trials).map(|_| run_once::<B, W>(WARMUP + rounds, WARMUP, iters)).collect();
+        (0..opts.trials).map(|_| run_once::<B, W>(WARMUP + rounds, WARMUP, iters, opts.read_results)).collect();
     samples.sort();
     Stats {
         median: samples[samples.len() / 2],
@@ -304,7 +315,10 @@ fn row(name: &str, stats: &Stats, baseline: Option<Duration>) {
 /// Every barrier at `W` workers, for each configured work amount
 fn run_all<const W: usize>(opts: &Opts) {
     for &iters in &opts.work {
-        println!("\nworkers = {W} (+1 producer), work = {iters} xorshift iterations per worker per round");
+        println!(
+            "\nworkers = {W} (+1 producer), work = {iters} xorshift iterations per worker per round, results {}",
+            if opts.read_results { "read" } else { "skip" }
+        );
         println!(
             "  {:<12} {:>12} {:>12} {:>12} {:>14} {:>9} {:>10}",
             "barrier", "median ns", "min ns", "max ns", "rounds/s", "vs best", "rounds"
@@ -328,7 +342,9 @@ fn run_all<const W: usize>(opts: &Opts) {
             results.push((format!("rearm C={c}"), stats));
         }
         results.push(("atomic".into(), measure::<AtomicBarrier<W>, W>(opts, iters)));
-        results.push(("mutex".into(), measure::<MutexBarrier<W>, W>(opts, iters)));
+        if opts.with_mutex {
+            results.push(("mutex".into(), measure::<MutexBarrier<W>, W>(opts, iters)));
+        }
 
         let best = results.iter().map(|(_, s)| s.median).min().unwrap();
         for (name, stats) in &results {
@@ -381,6 +397,8 @@ struct Opts {
     workers: Vec<usize>,
     cores: usize,
     oversubscribe: bool,
+    with_mutex: bool,
+    read_results: bool,
     clusters: Vec<usize>,
     work: Vec<u64>,
     trials: usize,
@@ -396,7 +414,7 @@ fn parse_list<T: std::str::FromStr>(flag: &str, s: Option<String>) -> Vec<T> {
 
 fn usage(msg: &str) -> ! {
     eprintln!(
-        "{msg}\nusage: cargo bench --bench barrier -- [--workers max|sweep|N,..] [--cluster C,..] [--work ITERS,..] [--trials N] [--time-ms MS] [--oversubscribe]"
+        "{msg}\nusage: cargo bench --bench barrier -- [--workers max|sweep|N,..] [--cluster C,..] [--work ITERS,..] [--trials N] [--time-ms MS] [--results read|skip] [--with-mutex] [--oversubscribe]"
     );
     std::process::exit(2)
 }
@@ -413,6 +431,8 @@ fn main() {
         workers: Vec::new(),
         cores,
         oversubscribe: false,
+        with_mutex: false,
+        read_results: true,
         clusters: vec![2, 4, 8],
         work: vec![0, 1000],
         trials: 5,
@@ -435,6 +455,14 @@ fn main() {
             "--trials" => opts.trials = parse_list::<usize>("--trials", args.next())[0].max(1),
             "--time-ms" => opts.time = Duration::from_millis(parse_list("--time-ms", args.next())[0]),
             "--oversubscribe" => opts.oversubscribe = true,
+            "--with-mutex" => opts.with_mutex = true,
+            "--results" => {
+                opts.read_results = match args.next().as_deref() {
+                    Some("read") => true,
+                    Some("skip") => false,
+                    _ => usage("--results takes `read` or `skip`"),
+                }
+            }
             // passed by `cargo bench`
             "--bench" => {}
             other => usage(&format!("unknown argument `{other}`")),
